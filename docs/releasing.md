@@ -10,7 +10,10 @@ resolvable.
 
 `release/version.json` is authoritative. For this train, every Rust and npm
 coordinate is `4.0.0-rc.1`, and npm publication uses the `next` distribution
-tag. `latest` remains unchanged until an explicit promotion decision.
+tag. npm's first-publication behavior assigned `latest` to the inert `0.0.0`
+bootstrap reservation. After the OIDC-published runtime passes installed
+native, WASM, and WASI smoke tests, retarget the new scoped package's `latest`
+pointer to `4.0.0-rc.1`, remove `bootstrap`, and deprecate `0.0.0`.
 
 The runtime's exact Rust requirements deliberately reject a mixed family. The
 development overlay changes only source location; it does not relax versions.
@@ -49,7 +52,7 @@ publication fail closed.
 
 CI uses npm trusted publishing or an environment-scoped automation credential.
 Interactive one-time passwords and recovery codes are never stored in the
-repository, issue tracker, logs, or chat. The protected `npm-runtime`
+repository, issue tracker, logs, or chat. The protected `npm`
 environment is the human approval boundary when two-factor authentication
 requires one.
 
@@ -58,5 +61,6 @@ requires one.
 Published versions and Git tags are immutable. If one platform or downstream
 facade fails after partial publication, correct the pipeline and issue
 `4.0.0-rc.2`; never overwrite `rc.1`. npm rollback changes a dist-tag only.
-Promotion to `latest` happens after installed-artifact smoke tests pass for all
-supported backends and the legacy facade's differential suite is green.
+The scoped bootstrap replacement happens after installed-artifact smoke tests
+pass for every supported backend. Promotion of the legacy unscoped
+`liblevenshtein@latest` remains a separate final-release decision.

@@ -36,6 +36,7 @@ runtime --> legacy
 
 note right of runtime #FFFDE7
   Protected publication environment;
-  never mutates npm latest during RC.
+  publish under next, then replace the
+  scoped 0.0.0 bootstrap latest after smoke.
 end note
 @enduml

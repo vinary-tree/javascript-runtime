@@ -161,7 +161,7 @@ jobs:
     needs: [contract, assemble]
     if: github.event_name == 'push' || inputs.publish
     runs-on: ubuntu-24.04
-    environment: npm-runtime
+    environment: npm
     permissions: { id-token: write }
     steps:
       - uses: actions/setup-node@v6

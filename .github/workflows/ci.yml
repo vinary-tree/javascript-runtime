@@ -31,26 +31,31 @@ jobs:
       - uses: actions/checkout@v6
         with:
           repository: vinary-tree/vinary-tree-interop
+          ref: master
           path: _family/vinary-tree-interop
           persist-credentials: false
       - uses: actions/checkout@v6
         with:
           repository: vinary-tree/libdictenstein
+          ref: master
           path: _family/libdictenstein
           persist-credentials: false
       - uses: actions/checkout@v6
         with:
           repository: vinary-tree/liblevenshtein-rust
+          ref: master
           path: _family/liblevenshtein-rust
           persist-credentials: false
       - uses: actions/checkout@v6
         with:
           repository: vinary-tree/lling-llang
+          ref: release/4.0.0-rc.1
           path: _family/lling-llang
           persist-credentials: false
       - uses: actions/checkout@v6
         with:
           repository: vinary-tree/duallity
+          ref: release/4.0.0-rc.1
           path: _family/duallity
           persist-credentials: false
       - uses: actions/setup-node@v6
