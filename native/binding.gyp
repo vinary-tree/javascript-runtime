@@ -1,25 +1,21 @@
 {
   "variables": {
-    "vinary_tree_profile%": "debug"
+    "vinary_tree_sdk%": "<(module_root_dir)/../.build/native-sdk"
   },
   "targets": [{
     "target_name": "vinary_tree_native",
     "sources": ["src/addon.cc"],
     "include_dirs": [
-      "../../../include",
-      "../../../vinary-tree-interop/include",
-      "../../../../libdictenstein/include",
-      "../../../../lling-llang/include",
-      "../../../../duallity/include"
+      "<(vinary_tree_sdk)/include"
     ],
     "cflags_cc": ["-std=c++20", "-Wall", "-Wextra", "-Werror"],
     "conditions": [["OS=='linux'", {
       "libraries": [
         "-Wl,--start-group",
-        "<(module_root_dir)/../../../../duallity/target/<(vinary_tree_profile)/libduallity.a",
-        "<(module_root_dir)/../../../../lling-llang/target/<(vinary_tree_profile)/liblling_llang.a",
-        "<(module_root_dir)/../../../target/<(vinary_tree_profile)/libliblevenshtein.a",
-        "<(module_root_dir)/../../../../libdictenstein/target/<(vinary_tree_profile)/liblibdictenstein.a",
+        "<(vinary_tree_sdk)/lib/libduallity.a",
+        "<(vinary_tree_sdk)/lib/liblling_llang.a",
+        "<(vinary_tree_sdk)/lib/libliblevenshtein.a",
+        "<(vinary_tree_sdk)/lib/liblibdictenstein.a",
         "-Wl,--end-group",
         "-ldl",
         "-lpthread",
@@ -27,20 +23,20 @@
       ]
     }], ["OS=='mac'", {
       "libraries": [
-        "<(module_root_dir)/../../../../duallity/target/<(vinary_tree_profile)/libduallity.a",
-        "<(module_root_dir)/../../../../lling-llang/target/<(vinary_tree_profile)/liblling_llang.a",
-        "<(module_root_dir)/../../../target/<(vinary_tree_profile)/libliblevenshtein.a",
-        "<(module_root_dir)/../../../../libdictenstein/target/<(vinary_tree_profile)/liblibdictenstein.a",
+        "<(vinary_tree_sdk)/lib/libduallity.a",
+        "<(vinary_tree_sdk)/lib/liblling_llang.a",
+        "<(vinary_tree_sdk)/lib/libliblevenshtein.a",
+        "<(vinary_tree_sdk)/lib/liblibdictenstein.a",
         "-liconv",
         "-framework CoreFoundation",
         "-framework Security"
       ]
     }], ["OS=='win'", {
       "libraries": [
-        "<(module_root_dir)/../../../../duallity/target/<(vinary_tree_profile)/duallity.lib",
-        "<(module_root_dir)/../../../../lling-llang/target/<(vinary_tree_profile)/lling_llang.lib",
-        "<(module_root_dir)/../../../target/<(vinary_tree_profile)/liblevenshtein.lib",
-        "<(module_root_dir)/../../../../libdictenstein/target/<(vinary_tree_profile)/libdictenstein.lib",
+        "<(vinary_tree_sdk)/lib/duallity.lib",
+        "<(vinary_tree_sdk)/lib/lling_llang.lib",
+        "<(vinary_tree_sdk)/lib/liblevenshtein.lib",
+        "<(vinary_tree_sdk)/lib/libdictenstein.lib",
         "bcrypt.lib",
         "userenv.lib",
         "ws2_32.lib",

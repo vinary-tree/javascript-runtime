@@ -1,0 +1,187 @@
+name: Release shared JavaScript runtime
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the fully verified npm artifact
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    name: Validate immutable release identity
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@v6
+        with: { node-version: "24", package-manager-cache: false }
+      - uses: dtolnay/rust-toolchain@1.95
+        with: { components: rustfmt }
+      - id: version
+        shell: bash
+        run: |
+          ./scripts/verify.sh
+          version=$(node -p 'require("./release/version.json").canonical')
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then test "$GITHUB_REF_NAME" = "v$version"; fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  native-prebuild:
+    name: Native ${{ matrix.os }} / ${{ matrix.arch }}
+    needs: contract
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, arch: x64, platform: linux-x64 }
+          - { os: ubuntu-24.04-arm, arch: arm64, platform: linux-arm64 }
+          - { os: macos-15-intel, arch: x64, platform: darwin-x64 }
+          - { os: macos-15, arch: arm64, platform: darwin-arm64 }
+          - { os: windows-2025, arch: x64, platform: win32-x64 }
+          - { os: windows-11-arm, arch: arm64, platform: win32-arm64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+        with: { persist-credentials: false }
+      - name: Checkout immutable family sources
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.contract.outputs.version }}
+        run: |
+          mkdir _family
+          for repository in vinary-tree-interop libdictenstein liblevenshtein-rust lling-llang duallity; do
+            gh repo clone "vinary-tree/$repository" "_family/$repository" -- --branch "v$VERSION" --depth 1
+          done
+      - uses: actions/setup-node@v6
+        with: { node-version: "24", architecture: "${{ matrix.arch }}", package-manager-cache: false }
+      - uses: dtolnay/rust-toolchain@1.95
+      - name: Install build tool and local interop type package
+        shell: bash
+        run: >-
+          npm install --ignore-scripts --no-save node-gyp@13.0.1
+          ./_family/vinary-tree-interop/bindings/javascript
+      - name: Build relocatable SDK and native addon
+        shell: bash
+        env:
+          VINARY_TREE_INTEROP_ROOT: ${{ github.workspace }}/_family/vinary-tree-interop
+          VINARY_TREE_LIBDICTENSTEIN_ROOT: ${{ github.workspace }}/_family/libdictenstein
+          VINARY_TREE_LIBLEVENSHTEIN_ROOT: ${{ github.workspace }}/_family/liblevenshtein-rust
+          VINARY_TREE_LLING_LLANG_ROOT: ${{ github.workspace }}/_family/lling-llang
+          VINARY_TREE_DUALLITY_ROOT: ${{ github.workspace }}/_family/duallity
+        run: |
+          npm run bootstrap:native
+          npm run build:native:release
+          npm run test:native
+          npm run test:leak
+          npm run stage:native
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-${{ matrix.platform }}
+          path: native/prebuilds
+          if-no-files-found: error
+
+  webassembly:
+    name: Browser WASM and WASI artifacts
+    needs: contract
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with: { persist-credentials: false }
+      - name: Checkout immutable family sources
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.contract.outputs.version }}
+        run: |
+          mkdir _family
+          for repository in vinary-tree-interop libdictenstein liblevenshtein-rust lling-llang duallity; do
+            gh repo clone "vinary-tree/$repository" "_family/$repository" -- --branch "v$VERSION" --depth 1
+          done
+      - uses: actions/setup-node@v6
+        with: { node-version: "24", package-manager-cache: false }
+      - uses: dtolnay/rust-toolchain@1.95
+        with: { targets: wasm32-unknown-unknown, wasm32-wasip1 }
+      - uses: jetli/wasm-pack-action@v0.4.0
+        with: { version: v0.13.1 }
+      - run: sudo apt-get update && sudo apt-get install --yes binaryen
+      - name: Install local interop type package
+        run: npm install --ignore-scripts --no-save ./_family/vinary-tree-interop/bindings/javascript
+      - name: Build and test both WebAssembly hosts
+        env:
+          VINARY_TREE_INTEROP_ROOT: ${{ github.workspace }}/_family/vinary-tree-interop
+          VINARY_TREE_LIBDICTENSTEIN_ROOT: ${{ github.workspace }}/_family/libdictenstein
+          VINARY_TREE_LIBLEVENSHTEIN_ROOT: ${{ github.workspace }}/_family/liblevenshtein-rust
+          VINARY_TREE_LLING_LLANG_ROOT: ${{ github.workspace }}/_family/lling-llang
+          VINARY_TREE_DUALLITY_ROOT: ${{ github.workspace }}/_family/duallity
+        run: |
+          npm run configure:local
+          npm run build:wasm
+          npm run build:wasi
+          npm test
+      - uses: actions/upload-artifact@v7
+        with:
+          name: webassembly
+          path: generated
+          if-no-files-found: error
+
+  assemble:
+    name: Assemble and inspect npm tarball
+    needs: [contract, native-prebuild, webassembly]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@v6
+        with: { node-version: "24", package-manager-cache: false }
+      - uses: actions/download-artifact@v7
+        with: { pattern: native-*, path: native/prebuilds, merge-multiple: true }
+      - uses: actions/download-artifact@v7
+        with: { name: webassembly, path: generated }
+      - run: npm install --ignore-scripts
+      - run: npm run verify:prebuilds
+      - run: npm run verify:package
+      - run: mkdir dist && npm pack --ignore-scripts --pack-destination dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: npm-package
+          path: dist/*.tgz
+          if-no-files-found: error
+
+  publish-npm:
+    name: Publish npm under next
+    needs: [contract, assemble]
+    if: github.event_name == 'push' || inputs.publish
+    runs-on: ubuntu-24.04
+    environment: npm-runtime
+    permissions: { id-token: write }
+    steps:
+      - uses: actions/setup-node@v6
+        with: { node-version: "24", registry-url: "https://registry.npmjs.org", package-manager-cache: false }
+      - uses: actions/download-artifact@v7
+        with: { name: npm-package, path: dist }
+      - run: npm publish --access public --provenance --tag next dist/*.tgz
+
+  github-release:
+    name: Publish checksummed runtime release
+    needs: [contract, assemble]
+    if: github.event_name == 'push' || inputs.publish
+    runs-on: ubuntu-24.04
+    permissions: { contents: write }
+    steps:
+      - uses: actions/download-artifact@v7
+        with: { name: npm-package, path: assets }
+      - run: sha256sum assets/*.tgz > assets/SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: assets/*
+          prerelease: true
+          generate_release_notes: true

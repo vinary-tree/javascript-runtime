@@ -1,0 +1,56 @@
+@startuml
+!theme plain
+skinparam backgroundColor #FAFAFA
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam ArrowColor #37474F
+skinparam defaultFontName DejaVu Sans
+title One JavaScript object graph, three physical backends, four project engines
+
+actor "Application" as app #FFF8E1
+
+package "Project facades" #E8EAF6 {
+  component "@vinary-tree/libdictenstein" as dictFacade #C5CAE9
+  component "liblevenshtein" as levFacade #C5CAE9
+  component "@vinary-tree/lling-llang" as llingFacade #C5CAE9
+  component "@vinary-tree/duallity" as dualFacade #C5CAE9
+}
+
+package "@vinary-tree/vinary-tree 4.0.0-rc.1" #E0F2F1 {
+  component "Runtime identity\n(resource compatibility gate)" as identity #80CBC4
+  component "Node N-API" as napi #B2DFDB
+  component "Browser WASM" as wasm #B2DFDB
+  component "Node WASI" as wasi #B2DFDB
+  package "One selected backend instance" #E8F5E9 {
+    component "libdictenstein" as dict #C8E6C9
+    component "liblevenshtein" as lev #C8E6C9
+    component "lling-llang" as lling #C8E6C9
+    component "duallity" as dual #C8E6C9
+    component "vinary-tree-interop\nretained resources" as interop #FFF59D
+  }
+}
+
+app --> dictFacade
+app --> levFacade
+app --> llingFacade
+app --> dualFacade
+dictFacade --> identity
+levFacade --> identity
+llingFacade --> identity
+dualFacade --> identity
+identity --> napi : Node
+identity --> wasm : browser
+identity --> wasi : Node + filesystem
+napi --> dict
+wasm --> dict
+wasi --> dict
+dict -right-> interop : produces dictionary
+lev -left-> interop : consumes dictionary
+dual --> interop : consumes dictionary\nproduces WFST
+lling --> interop : produces/consumes WFST
+
+note bottom of interop #FFFDE7
+  O(1) in-process handoff:
+  retain capability, do not serialize graph
+end note
+@enduml

@@ -1,0 +1,5 @@
+project_name = "javascript-runtime"
+
+[index]
+include = ["README.md", "docs/**", "scripts/**", "native/src/**", "rust/src/**", "test/**", "*.mjs", "*.d.ts"]
+exclude = [".build/**", "generated/**", "native/prebuilds/**", "node_modules/**", "test-property/node_modules/**"]

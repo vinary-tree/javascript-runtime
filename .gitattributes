@@ -1,0 +1,4 @@
+*.bat text eol=crlf whitespace=cr-at-eol
+*.mjs text eol=lf
+*.sh text eol=lf
+*.rs text eol=lf

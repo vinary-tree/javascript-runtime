@@ -2,3 +2,10 @@
 # to resolve the unpublished @vinary-tree/interop sibling. The lockfile is
 # committed for reproducibility; the installed tree is not.
 test-property/node_modules/
+node_modules/
+.build/
+.cargo/config.toml
+generated/
+native/build/
+native/prebuilds/
+rust/target/

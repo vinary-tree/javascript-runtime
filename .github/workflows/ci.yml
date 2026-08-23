@@ -1,0 +1,81 @@
+name: Verify shared JavaScript runtime
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-contract:
+    name: Source, version, and documentation contracts
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@v6
+        with: { node-version: "24", package-manager-cache: false }
+      - uses: dtolnay/rust-toolchain@1.95
+        with: { components: rustfmt }
+      - run: ./scripts/verify.sh
+
+  integrated-linux:
+    name: Native and browser-WASM integration
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with: { persist-credentials: false }
+      - uses: actions/checkout@v6
+        with:
+          repository: vinary-tree/vinary-tree-interop
+          path: _family/vinary-tree-interop
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          repository: vinary-tree/libdictenstein
+          path: _family/libdictenstein
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          repository: vinary-tree/liblevenshtein-rust
+          path: _family/liblevenshtein-rust
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          repository: vinary-tree/lling-llang
+          path: _family/lling-llang
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          repository: vinary-tree/duallity
+          path: _family/duallity
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with: { node-version: "24", package-manager-cache: false }
+      - uses: dtolnay/rust-toolchain@1.95
+        with: { targets: wasm32-unknown-unknown }
+      - uses: jetli/wasm-pack-action@v0.4.0
+        with: { version: v0.13.1 }
+      - name: Install build tool and local interop type package
+        run: >-
+          npm install --ignore-scripts --no-save node-gyp@13.0.1
+          ./_family/vinary-tree-interop/bindings/javascript
+      - name: Build and test integrated backends
+        env:
+          VINARY_TREE_INTEROP_ROOT: ${{ github.workspace }}/_family/vinary-tree-interop
+          VINARY_TREE_LIBDICTENSTEIN_ROOT: ${{ github.workspace }}/_family/libdictenstein
+          VINARY_TREE_LIBLEVENSHTEIN_ROOT: ${{ github.workspace }}/_family/liblevenshtein-rust
+          VINARY_TREE_LLING_LLANG_ROOT: ${{ github.workspace }}/_family/lling-llang
+          VINARY_TREE_DUALLITY_ROOT: ${{ github.workspace }}/_family/duallity
+        run: |
+          npm run configure:local
+          npm run bootstrap:native
+          npm run build:native:release
+          npm run test:native
+          npm run test:leak
+          npm run test:property
+          npm run build:wasm
+          npm test

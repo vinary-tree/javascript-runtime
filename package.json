@@ -1,6 +1,6 @@
 {
   "name": "@vinary-tree/vinary-tree",
-  "version": "0.10.0",
+  "version": "4.0.0-rc.1",
   "description": "Single-instance JavaScript runtime for related Vinary Tree libraries",
   "author": {
     "name": "Dylon Edwards",
@@ -11,11 +11,14 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/vinary-tree/liblevenshtein-rust.git",
-    "directory": "bindings/javascript-runtime"
+    "url": "git+https://github.com/vinary-tree/javascript-runtime.git"
   },
-  "engines": { "node": ">=22.14" },
-  "dependencies": { "@vinary-tree/interop": "0.1.0" },
+  "engines": {
+    "node": ">=22.14"
+  },
+  "dependencies": {
+    "@vinary-tree/interop": "4.0.0-rc.1"
+  },
   "types": "./index.d.ts",
   "exports": {
     ".": {
@@ -48,18 +51,31 @@
     "generated/wasm/vinary_tree_bg.wasm",
     "generated/wasi/vinary_tree.wasm"
   ],
-  "publishConfig": { "access": "public", "provenance": true },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true,
+    "tag": "next"
+  },
+  "devDependencies": {
+    "node-gyp": "13.0.1"
+  },
   "scripts": {
-    "build:native": "node-gyp rebuild --directory native --nodedir=/usr",
-    "build:native:release": "node-gyp rebuild --directory native --nodedir=/usr -- -Dvinary_tree_profile=release",
+    "configure:local": "node scripts/configure-local.mjs",
+    "bootstrap:native": "node scripts/bootstrap-native-sdk.mjs",
+    "build:native": "node-gyp rebuild --directory native",
+    "build:native:release": "node-gyp rebuild --directory native",
     "stage:native": "node scripts/stage-native-prebuild.mjs",
-    "build:wasm": "wasm-pack build rust --target web --out-dir ../generated/wasm --out-name vinary_tree",
-    "build:wasi": "cargo build --manifest-path rust/Cargo.toml --release --target wasm32-wasip1 --no-default-features --features wasi && mkdir -p generated/wasi && cp ../../target/wasm32-wasip1/release/vinary_tree_js_runtime.wasm generated/wasi/vinary_tree.wasm && wasm-opt -O3 --strip-debug generated/wasi/vinary_tree.wasm -o generated/wasi/vinary_tree.wasm",
+    "build:wasm": "wasm-pack build rust --target web --out-dir ../generated/wasm --out-name vinary_tree && node scripts/prepare-generated-wasm.mjs",
+    "build:wasi": "cargo build --manifest-path rust/Cargo.toml --target-dir .build/cargo --release --target wasm32-wasip1 --no-default-features --features wasi && mkdir -p generated/wasi && cp .build/cargo/wasm32-wasip1/release/vinary_tree_js_runtime.wasm generated/wasi/vinary_tree.wasm && wasm-opt -O3 --strip-debug generated/wasi/vinary_tree.wasm -o generated/wasi/vinary_tree.wasm",
     "test:native": "node --test test/native.test.mjs",
     "test:leak": "node --expose-gc --test test/native.leak.test.mjs",
     "test:property": "npm --prefix test-property install --no-audit --no-fund && node --test test-property/native.property.test.mjs",
     "test": "node --test test/browser-wasm.test.mjs test/wasi.test.mjs",
-    "stage:license": "node scripts/stage-license.mjs",
-    "prepack": "npm run stage:license && npm run build:wasm && npm test"
+    "verify:license": "node scripts/stage-license.mjs",
+    "verify:version": "node scripts/sync-release-version.mjs",
+    "verify:prebuilds": "node scripts/verify-native-prebuilds.mjs",
+    "verify:package": "node scripts/verify-package.mjs",
+    "verify": "./scripts/verify.sh",
+    "prepack": "npm run verify:license && npm run verify:version && npm run build:wasm && npm test"
   }
 }
