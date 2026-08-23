@@ -67,9 +67,11 @@ jobs:
       - uses: actions/setup-node@v6
         with: { node-version: "24", package-manager-cache: false }
       - uses: dtolnay/rust-toolchain@1.95
-        with: { targets: wasm32-unknown-unknown }
+        with: { targets: wasm32-unknown-unknown, wasm32-wasip1 }
       - uses: jetli/wasm-pack-action@v0.4.0
         with: { version: v0.13.1 }
+      - name: Install the pinned WebAssembly optimizer
+        run: sudo apt-get update && sudo apt-get install --yes binaryen
       - name: Install build tool and local interop type package
         run: >-
           npm install --ignore-scripts --no-save node-gyp@13.0.1
@@ -90,4 +92,5 @@ jobs:
           npm run test:leak
           npm run test:property
           npm run build:wasm
+          npm run build:wasi
           npm test

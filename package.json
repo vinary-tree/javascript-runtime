@@ -76,6 +76,6 @@
     "verify:prebuilds": "node scripts/verify-native-prebuilds.mjs",
     "verify:package": "node scripts/verify-package.mjs",
     "verify": "./scripts/verify.sh",
-    "prepack": "npm run verify:license && npm run verify:version && npm run build:wasm && npm test"
+    "prepack": "npm run verify:license && npm run verify:version && npm run build:wasm && npm run build:wasi && npm test"
   }
 }
