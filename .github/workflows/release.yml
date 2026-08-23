@@ -115,7 +115,7 @@ jobs:
         with: { targets: wasm32-unknown-unknown, wasm32-wasip1 }
       - uses: jetli/wasm-pack-action@v0.4.0
         with: { version: v0.13.1 }
-      - run: sudo apt-get update && sudo apt-get install --yes binaryen
+      - run: bash .github/setup-binaryen.sh
       - name: Install local interop type package
         run: npm install --ignore-scripts --no-save ./_family/vinary-tree-interop/bindings/javascript
       - name: Build and test both WebAssembly hosts

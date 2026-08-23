@@ -71,7 +71,7 @@ jobs:
       - uses: jetli/wasm-pack-action@v0.4.0
         with: { version: v0.13.1 }
       - name: Install the pinned WebAssembly optimizer
-        run: sudo apt-get update && sudo apt-get install --yes binaryen
+        run: bash .github/setup-binaryen.sh
       - name: Install build tool and local interop type package
         run: >-
           npm install --ignore-scripts --no-save node-gyp@13.0.1
