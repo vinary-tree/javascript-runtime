@@ -1,3 +1,5 @@
+/// <reference lib="esnext.disposable" />
+
 import type { DictionaryResource, RuntimeIdentity, UnitDomain } from "@vinary-tree/interop";
 
 export type Algorithm = "standard" | "transposition" | "merge-and-split" | "damerau-levenshtein";
