@@ -36,6 +36,12 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v6
         with:
+          repository: vinary-tree/llattice
+          ref: v0.1.0
+          path: _family/llattice
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
           repository: vinary-tree/libdictenstein
           ref: master
           path: _family/libdictenstein
@@ -71,6 +77,7 @@ jobs:
       - name: Build and test integrated backends
         env:
           VINARY_TREE_INTEROP_ROOT: ${{ github.workspace }}/_family/vinary-tree-interop
+          VINARY_TREE_LLATTICE_ROOT: ${{ github.workspace }}/_family/llattice
           VINARY_TREE_LIBDICTENSTEIN_ROOT: ${{ github.workspace }}/_family/libdictenstein
           VINARY_TREE_LIBLEVENSHTEIN_ROOT: ${{ github.workspace }}/_family/liblevenshtein-rust
           VINARY_TREE_LLING_LLANG_ROOT: ${{ github.workspace }}/_family/lling-llang

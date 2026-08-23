@@ -24,6 +24,7 @@ const builds = [
 const expected = new Map([
   [componentRoots.duallity, model.dependencies.duallity],
   [componentRoots.interop, model.dependencies["vinary-tree-interop"]],
+  [componentRoots.llattice, model.dependencies.llattice],
   [componentRoots.libdictenstein, model.dependencies.libdictenstein],
   [componentRoots.liblevenshtein, model.dependencies.liblevenshtein],
   [componentRoots.llingLlang, model.dependencies["lling-llang"]],

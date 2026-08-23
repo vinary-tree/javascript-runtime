@@ -59,6 +59,7 @@ jobs:
           VERSION: ${{ needs.contract.outputs.version }}
         run: |
           mkdir _family
+          gh repo clone "vinary-tree/llattice" "_family/llattice" -- --branch "v0.1.0" --depth 1
           for repository in vinary-tree-interop libdictenstein liblevenshtein-rust lling-llang duallity; do
             gh repo clone "vinary-tree/$repository" "_family/$repository" -- --branch "v$VERSION" --depth 1
           done
@@ -74,6 +75,7 @@ jobs:
         shell: bash
         env:
           VINARY_TREE_INTEROP_ROOT: ${{ github.workspace }}/_family/vinary-tree-interop
+          VINARY_TREE_LLATTICE_ROOT: ${{ github.workspace }}/_family/llattice
           VINARY_TREE_LIBDICTENSTEIN_ROOT: ${{ github.workspace }}/_family/libdictenstein
           VINARY_TREE_LIBLEVENSHTEIN_ROOT: ${{ github.workspace }}/_family/liblevenshtein-rust
           VINARY_TREE_LLING_LLANG_ROOT: ${{ github.workspace }}/_family/lling-llang
@@ -103,6 +105,7 @@ jobs:
           VERSION: ${{ needs.contract.outputs.version }}
         run: |
           mkdir _family
+          gh repo clone "vinary-tree/llattice" "_family/llattice" -- --branch "v0.1.0" --depth 1
           for repository in vinary-tree-interop libdictenstein liblevenshtein-rust lling-llang duallity; do
             gh repo clone "vinary-tree/$repository" "_family/$repository" -- --branch "v$VERSION" --depth 1
           done
@@ -118,6 +121,7 @@ jobs:
       - name: Build and test both WebAssembly hosts
         env:
           VINARY_TREE_INTEROP_ROOT: ${{ github.workspace }}/_family/vinary-tree-interop
+          VINARY_TREE_LLATTICE_ROOT: ${{ github.workspace }}/_family/llattice
           VINARY_TREE_LIBDICTENSTEIN_ROOT: ${{ github.workspace }}/_family/libdictenstein
           VINARY_TREE_LIBLEVENSHTEIN_ROOT: ${{ github.workspace }}/_family/liblevenshtein-rust
           VINARY_TREE_LLING_LLANG_ROOT: ${{ github.workspace }}/_family/lling-llang

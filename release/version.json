@@ -14,6 +14,7 @@
   ],
   "dependencies": {
     "duallity": "4.0.0-rc.1",
+    "llattice": "0.1.0",
     "libdictenstein": "4.0.0-rc.1",
     "liblevenshtein": "4.0.0-rc.1",
     "lling-llang": "4.0.0-rc.1",
