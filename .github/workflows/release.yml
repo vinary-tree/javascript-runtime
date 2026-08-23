@@ -5,11 +5,14 @@ on:
     tags: ["v*.*.*"]
   workflow_dispatch:
     inputs:
-      publish:
-        description: Publish the fully verified npm artifact
+      registry:
+        description: Publish npm from an immutable release tag
         required: true
-        type: boolean
-        default: false
+        type: choice
+        default: validate-only
+        options:
+          - validate-only
+          - npm
 
 permissions:
   contents: read
@@ -32,7 +35,11 @@ jobs:
         run: |
           ./scripts/verify.sh
           version=$(node -p 'require("./release/version.json").canonical')
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then test "$GITHUB_REF_NAME" = "v$version"; fi
+          if [[ "$GITHUB_REF" != refs/tags/* ]]; then
+            echo "::error::Manual releases must be dispatched against an immutable tag." >&2
+            exit 1
+          fi
+          test "$GITHUB_REF_NAME" = "v$version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
   native-prebuild:
@@ -163,7 +170,7 @@ jobs:
   publish-npm:
     name: Publish npm under next
     needs: [contract, assemble]
-    if: github.event_name == 'push' || inputs.publish
+    if: github.event_name == 'workflow_dispatch' && github.ref_type == 'tag' && inputs.registry == 'npm'
     runs-on: ubuntu-24.04
     environment: npm
     permissions: { id-token: write }
@@ -177,7 +184,10 @@ jobs:
   github-release:
     name: Publish checksummed runtime release
     needs: [contract, assemble]
-    if: github.event_name == 'push' || inputs.publish
+    if: >-
+      github.ref_type == 'tag' &&
+      (github.event_name == 'push' ||
+       (github.event_name == 'workflow_dispatch' && inputs.registry == 'validate-only'))
     runs-on: ubuntu-24.04
     permissions: { contents: write }
     steps:
@@ -187,5 +197,5 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: assets/*
-          prerelease: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true

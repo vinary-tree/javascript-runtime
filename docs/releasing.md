@@ -18,6 +18,32 @@ pointer to `4.0.0-rc.1`, remove `bootstrap`, and deprecate `0.0.0`.
 The runtime's exact Rust requirements deliberately reject a mixed family. The
 development overlay changes only source location; it does not relax versions.
 
+## Exact-tag workflow protocol
+
+The release workflow has two fail-closed modes. `validate-only` builds all six
+native prebuilds plus browser WebAssembly and WASI, assembles the npm tarball,
+verifies its contents, and creates the checksummed GitHub prerelease. `npm`
+repeats the same immutable-tag gates and then enters only the protected npm
+environment.
+
+```bash
+gh workflow run release.yml \
+  --repo vinary-tree/javascript-runtime \
+  --ref v4.0.0-rc.1 \
+  -f registry=validate-only
+
+gh workflow run release.yml \
+  --repo vinary-tree/javascript-runtime \
+  --ref v4.0.0-rc.1 \
+  -f registry=npm
+```
+
+Pushing the tag never uploads to npm. A manual branch dispatch fails before
+building, and there is no multi-registry or bypass mode. The `npm` job uses the
+repository's trusted publisher, provenance, and protected `npm` environment;
+the local npm login is used only for read-back verification and dist-tag
+management after publication.
+
 ## Required order
 
 1. Publish independent leaf crate `llattice` at its own `0.1.0` version if the
