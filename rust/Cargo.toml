@@ -1,6 +1,6 @@
 [package]
 name = "vinary-tree-js-runtime"
-version = "4.0.0-rc.2"
+version = "4.0.0-rc.3"
 edition = "2021"
 rust-version = "1.95"
 license-file = "../LICENSE"
@@ -12,11 +12,11 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-liblevenshtein = { version = "=4.0.0-rc.2", features = ["bindings-phonetic"] }
-libdictenstein = { version = "=4.0.0-rc.2", features = ["bindings-core"] }
-lling-llang = { version = "=4.0.0-rc.2", default-features = false, features = ["bindings-core"] }
-duallity = { version = "=4.0.0-rc.2", features = ["bindings-core"] }
-vinary-tree-interop = "=4.0.0-rc.2"
+liblevenshtein = { version = "=4.0.0-rc.3", features = ["bindings-phonetic"] }
+libdictenstein = { version = "=4.0.0-rc.3", features = ["bindings-core"] }
+lling-llang = { version = "=4.0.0-rc.3", default-features = false, features = ["bindings-core"] }
+duallity = { version = "=4.0.0-rc.3", features = ["bindings-core"] }
+vinary-tree-interop = "=4.0.0-rc.3"
 wasm-bindgen = "=0.2.100"
 js-sys = "=0.3.77"
 console_error_panic_hook = "0.1"

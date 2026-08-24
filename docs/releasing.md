@@ -9,16 +9,20 @@ resolvable.
 ## Release identity
 
 `release/version.json` is authoritative. For this train, every Rust and npm
-coordinate is `4.0.0-rc.2`, and npm publication uses the `next` distribution
+coordinate is `4.0.0-rc.3`, and npm publication uses the `next` distribution
 tag. npm's first-publication behavior assigned `latest` to the inert `0.0.0`
 bootstrap reservation. After the OIDC-published runtime passes installed
 native, WASM, and WASI smoke tests, retarget the new scoped package's `latest`
-pointer to `4.0.0-rc.2`, remove `bootstrap`, and deprecate `0.0.0`.
+pointer to `4.0.0-rc.3`, remove `bootstrap`, and deprecate `0.0.0`.
 
 The runtime's exact Rust requirements deliberately reject a mixed family. The
 development overlay changes only source location; it does not relax versions.
 
 ## Exact-tag workflow protocol
+
+Pushing the annotated tag creates only the immutable source ref. Release
+validation and publication are explicit manual dispatches so the complete
+cross-project tag graph and public prerequisites can be established first.
 
 The release workflow has two fail-closed modes. `validate-only` builds all six
 native prebuilds plus browser WebAssembly and WASI, assembles the npm tarball,
@@ -29,12 +33,12 @@ environment.
 ```bash
 gh workflow run release.yml \
   --repo vinary-tree/javascript-runtime \
-  --ref v4.0.0-rc.2 \
+  --ref v4.0.0-rc.3 \
   -f registry=validate-only
 
 gh workflow run release.yml \
   --repo vinary-tree/javascript-runtime \
-  --ref v4.0.0-rc.2 \
+  --ref v4.0.0-rc.3 \
   -f registry=npm
 ```
 
@@ -51,13 +55,13 @@ management after publication.
 2. Publish `vinary-tree-interop` and verify installation from each supported
    registry coordinate.
 3. Publish `libdictenstein`, `liblevenshtein`, `lling-llang`, and `duallity`
-   crates at `4.0.0-rc.2` in dependency order.
+   crates at `4.0.0-rc.3` in dependency order.
 4. Build the runtime's native prebuild matrix from immutable component tags;
    build browser WASM and WASI from the same exact versions.
 5. Merge the platform artifacts, run package-content and installed-tarball
-   smoke tests, then publish `@vinary-tree/vinary-tree@4.0.0-rc.2` with `next`.
+   smoke tests, then publish `@vinary-tree/vinary-tree@4.0.0-rc.3` with `next`.
 6. Publish project-specific npm facades against that exact runtime.
-7. Publish the unscoped `liblevenshtein@4.0.0-rc.2` compatibility facade with
+7. Publish the unscoped `liblevenshtein@4.0.0-rc.3` compatibility facade with
    `next`; do not change the legacy `latest` tag.
 
 ## Native platform matrix
@@ -85,8 +89,9 @@ requires one.
 ## Failure recovery
 
 Published versions and Git tags are immutable. If one platform or downstream
-facade fails after partial publication, correct the pipeline and issue
-`4.0.0-rc.2`; never overwrite `rc.1`. npm rollback changes a dist-tag only.
-The scoped bootstrap replacement happens after installed-artifact smoke tests
-pass for every supported backend. Promotion of the legacy unscoped
+facade fails after partial publication, correct the pipeline and issue the
+next unused candidate; never overwrite an earlier RC. npm rollback changes a
+dist-tag only. The scoped bootstrap replacement happens after installed-
+artifact smoke tests pass for every supported backend. Promotion of the legacy
+unscoped
 `liblevenshtein@latest` remains a separate final-release decision.

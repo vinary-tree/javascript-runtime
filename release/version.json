@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "component": "javascript-runtime",
-  "canonical": "4.0.0-rc.2",
-  "npm": "4.0.0-rc.2",
+  "canonical": "4.0.0-rc.3",
+  "npm": "4.0.0-rc.3",
   "distTag": "next",
   "nativePrebuilds": [
     "linux-x64",
@@ -13,12 +13,12 @@
     "win32-arm64"
   ],
   "dependencies": {
-    "duallity": "4.0.0-rc.2",
+    "duallity": "4.0.0-rc.3",
     "llattice": "0.1.0",
-    "libdictenstein": "4.0.0-rc.2",
-    "liblevenshtein": "4.0.0-rc.2",
-    "lling-llang": "4.0.0-rc.2",
-    "vinary-tree-interop": "4.0.0-rc.2",
-    "@vinary-tree/interop": "4.0.0-rc.2"
+    "libdictenstein": "4.0.0-rc.3",
+    "liblevenshtein": "4.0.0-rc.3",
+    "lling-llang": "4.0.0-rc.3",
+    "vinary-tree-interop": "4.0.0-rc.3",
+    "@vinary-tree/interop": "4.0.0-rc.3"
   }
 }

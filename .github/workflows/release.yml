@@ -1,8 +1,6 @@
 name: Release shared JavaScript runtime
 
 on:
-  push:
-    tags: ["v*.*.*"]
   workflow_dispatch:
     inputs:
       registry:
@@ -185,9 +183,9 @@ jobs:
     name: Publish checksummed runtime release
     needs: [contract, assemble]
     if: >-
+      github.event_name == 'workflow_dispatch' &&
       github.ref_type == 'tag' &&
-      (github.event_name == 'push' ||
-       (github.event_name == 'workflow_dispatch' && inputs.registry == 'validate-only'))
+      inputs.registry == 'validate-only'
     runs-on: ubuntu-24.04
     permissions: { contents: write }
     steps:

@@ -180,7 +180,7 @@ dependencies = [
 
 [[package]]
 name = "duallity"
-version = "4.0.0-rc.2"
+version = "4.0.0-rc.3"
 dependencies = [
  "libdictenstein",
  "liblevenshtein",
@@ -196,16 +196,6 @@ name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
-
-[[package]]
-name = "errno"
-version = "0.3.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
-dependencies = [
- "libc",
- "windows-sys",
-]
 
 [[package]]
 name = "find-msvc-tools"
@@ -284,7 +274,7 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
 name = "libdictenstein"
-version = "4.0.0-rc.2"
+version = "4.0.0-rc.3"
 dependencies = [
  "arc-swap",
  "bincode-next",
@@ -296,7 +286,6 @@ dependencies = [
  "memmap2",
  "parking_lot",
  "rustc-hash",
- "rustix",
  "serde",
  "smallvec",
  "sysinfo",
@@ -307,7 +296,7 @@ dependencies = [
 
 [[package]]
 name = "liblevenshtein"
-version = "4.0.0-rc.2"
+version = "4.0.0-rc.3"
 dependencies = [
  "ahash",
  "arc-swap",
@@ -323,18 +312,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "linux-raw-sys"
-version = "0.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
-
-[[package]]
 name = "llattice"
 version = "0.1.0"
 
 [[package]]
 name = "lling-llang"
-version = "4.0.0-rc.2"
+version = "4.0.0-rc.3"
 dependencies = [
  "ahash",
  "blake3",
@@ -697,19 +680,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d"
 
 [[package]]
-name = "rustix"
-version = "1.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190"
-dependencies = [
- "bitflags",
- "errno",
- "libc",
- "linux-raw-sys",
- "windows-sys",
-]
-
-[[package]]
 name = "rustversion"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -896,11 +866,11 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vinary-tree-interop"
-version = "4.0.0-rc.2"
+version = "4.0.0-rc.3"
 
 [[package]]
 name = "vinary-tree-js-runtime"
-version = "4.0.0-rc.2"
+version = "4.0.0-rc.3"
 dependencies = [
  "console_error_panic_hook",
  "duallity",
@@ -1104,15 +1074,6 @@ name = "windows-strings"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7837d08f69c77cf6b07689544538e017c1bfcf57e34b4c0ff58e6c2cd3b37091"
-dependencies = [
- "windows-link",
-]
-
-[[package]]
-name = "windows-sys"
-version = "0.61.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc"
 dependencies = [
  "windows-link",
 ]
