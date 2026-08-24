@@ -9,11 +9,11 @@ resolvable.
 ## Release identity
 
 `release/version.json` is authoritative. For this train, every Rust and npm
-coordinate is `4.0.0-rc.1`, and npm publication uses the `next` distribution
+coordinate is `4.0.0-rc.2`, and npm publication uses the `next` distribution
 tag. npm's first-publication behavior assigned `latest` to the inert `0.0.0`
 bootstrap reservation. After the OIDC-published runtime passes installed
 native, WASM, and WASI smoke tests, retarget the new scoped package's `latest`
-pointer to `4.0.0-rc.1`, remove `bootstrap`, and deprecate `0.0.0`.
+pointer to `4.0.0-rc.2`, remove `bootstrap`, and deprecate `0.0.0`.
 
 The runtime's exact Rust requirements deliberately reject a mixed family. The
 development overlay changes only source location; it does not relax versions.
@@ -29,12 +29,12 @@ environment.
 ```bash
 gh workflow run release.yml \
   --repo vinary-tree/javascript-runtime \
-  --ref v4.0.0-rc.1 \
+  --ref v4.0.0-rc.2 \
   -f registry=validate-only
 
 gh workflow run release.yml \
   --repo vinary-tree/javascript-runtime \
-  --ref v4.0.0-rc.1 \
+  --ref v4.0.0-rc.2 \
   -f registry=npm
 ```
 
@@ -51,13 +51,13 @@ management after publication.
 2. Publish `vinary-tree-interop` and verify installation from each supported
    registry coordinate.
 3. Publish `libdictenstein`, `liblevenshtein`, `lling-llang`, and `duallity`
-   crates at `4.0.0-rc.1` in dependency order.
+   crates at `4.0.0-rc.2` in dependency order.
 4. Build the runtime's native prebuild matrix from immutable component tags;
    build browser WASM and WASI from the same exact versions.
 5. Merge the platform artifacts, run package-content and installed-tarball
-   smoke tests, then publish `@vinary-tree/vinary-tree@4.0.0-rc.1` with `next`.
+   smoke tests, then publish `@vinary-tree/vinary-tree@4.0.0-rc.2` with `next`.
 6. Publish project-specific npm facades against that exact runtime.
-7. Publish the unscoped `liblevenshtein@4.0.0-rc.1` compatibility facade with
+7. Publish the unscoped `liblevenshtein@4.0.0-rc.2` compatibility facade with
    `next`; do not change the legacy `latest` tag.
 
 ## Native platform matrix

@@ -16,7 +16,7 @@ package "Project facades" #E8EAF6 {
   component "@vinary-tree/duallity" as dualFacade #C5CAE9
 }
 
-package "@vinary-tree/vinary-tree 4.0.0-rc.1" #E0F2F1 {
+package "@vinary-tree/vinary-tree 4.0.0-rc.2" #E0F2F1 {
   component "Runtime identity\n(resource compatibility gate)" as identity #80CBC4
   component "Node N-API" as napi #B2DFDB
   component "Browser WASM" as wasm #B2DFDB

@@ -4,18 +4,18 @@ skinparam backgroundColor #FAFAFA
 skinparam shadowing false
 skinparam ArrowColor #455A64
 skinparam defaultFontName DejaVu Sans
-title Immutable 4.0.0-rc.1 JavaScript release dependency graph
+title Immutable 4.0.0-rc.2 JavaScript release dependency graph
 
 rectangle "llattice\n0.1.0" as lattice #ECEFF1
-rectangle "vinary-tree-interop\n4.0.0-rc.1" as interop #FFF59D
-rectangle "libdictenstein\n4.0.0-rc.1" as dict #C8E6C9
-rectangle "liblevenshtein\n4.0.0-rc.1" as lev #C8E6C9
-rectangle "lling-llang\n4.0.0-rc.1" as lling #C8E6C9
-rectangle "duallity\n4.0.0-rc.1" as dual #C8E6C9
+rectangle "vinary-tree-interop\n4.0.0-rc.2" as interop #FFF59D
+rectangle "libdictenstein\n4.0.0-rc.2" as dict #C8E6C9
+rectangle "liblevenshtein\n4.0.0-rc.2" as lev #C8E6C9
+rectangle "lling-llang\n4.0.0-rc.2" as lling #C8E6C9
+rectangle "duallity\n4.0.0-rc.2" as dual #C8E6C9
 rectangle "platform native prebuilds\n+ browser WASM + WASI" as artifacts #B2DFDB
-rectangle "@vinary-tree/vinary-tree\n4.0.0-rc.1 · npm next" as runtime #80CBC4
-rectangle "project npm facades\n4.0.0-rc.1 · npm next" as facades #C5CAE9
-rectangle "liblevenshtein compatibility facade\n4.0.0-rc.1 · npm next" as legacy #FFCCBC
+rectangle "@vinary-tree/vinary-tree\n4.0.0-rc.2 · npm next" as runtime #80CBC4
+rectangle "project npm facades\n4.0.0-rc.2 · npm next" as facades #C5CAE9
+rectangle "liblevenshtein compatibility facade\n4.0.0-rc.2 · npm next" as legacy #FFCCBC
 
 lattice --> dict
 interop --> dict

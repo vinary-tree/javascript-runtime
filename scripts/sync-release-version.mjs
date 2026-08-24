@@ -28,6 +28,27 @@ function updateJson(path, mutate) {
   return value;
 }
 
+function rewriteCandidateTokens(paths) {
+  if (!write) return;
+  const [base, candidate] = model.canonical.split("-rc.");
+  const escaped = base.replaceAll(".", "\\.");
+  const replacements = [
+    [new RegExp(`${escaped}\\.rc\\.\\d+`, "g"), `${base}.rc.${candidate}`],
+    [new RegExp(`${escaped}~rc\\d+`, "g"), `${base}~rc${candidate}`],
+    [new RegExp(`${escaped}rc\\d+-\\d+`, "g"), `${base}rc${candidate}-1`],
+    [new RegExp(`${escaped}rc\\d+`, "g"), `${base}rc${candidate}`],
+    [new RegExp(`${escaped}-rc\\.\\d+`, "g"), model.canonical],
+  ];
+  for (const path of paths) {
+    const absolute = join(root, path);
+    let source = readFileSync(absolute, "utf8");
+    for (const [pattern, replacement] of replacements) {
+      source = source.replace(pattern, replacement);
+    }
+    writeFileSync(absolute, source);
+  }
+}
+
 const packageJson = updateJson("package.json", (value) => {
   if (write) {
     value.version = model.npm;
@@ -62,6 +83,31 @@ if (write) {
   );
   writeFileSync(cargoPath, cargo);
 }
+const cargoLockPath = join(root, "rust", "Cargo.lock");
+let cargoLock = readFileSync(cargoLockPath, "utf8");
+const lockedReleasePackages = new Map([
+  ["vinary-tree-js-runtime", model.canonical],
+  ["duallity", model.dependencies.duallity],
+  ["libdictenstein", model.dependencies.libdictenstein],
+  ["liblevenshtein", model.dependencies.liblevenshtein],
+  ["lling-llang", model.dependencies["lling-llang"]],
+  ["vinary-tree-interop", model.dependencies["vinary-tree-interop"]],
+]);
+for (const [name, version] of lockedReleasePackages) {
+  const pattern = new RegExp(`(\\[\\[package\\]\\]\\nname = "${name}"\\nversion = ")[^"]+`, "m");
+  if (!pattern.test(cargoLock)) {
+    throw new Error(`rust/Cargo.lock has no package entry for ${name}`);
+  }
+  if (write) cargoLock = cargoLock.replace(pattern, `$1${version}`);
+}
+if (write) writeFileSync(cargoLockPath, cargoLock);
+rewriteCandidateTokens([
+  ".github/workflows/ci.yml",
+  "README.md",
+  "docs/releasing.md",
+  "docs/diagrams/release-dependency-graph.puml",
+  "docs/diagrams/runtime-architecture.puml",
+]);
 
 const failures = [];
 const expect = (name, actual, wanted) => {
@@ -87,5 +133,13 @@ expect(
   cargo.match(/^vinary-tree-interop = "=([^"]+)"/m)?.[1],
   model.dependencies["vinary-tree-interop"],
 );
+for (const [name, version] of lockedReleasePackages) {
+  const escaped = name.replaceAll("-", "\\-");
+  expect(
+    `Rust lock ${name}`,
+    cargoLock.match(new RegExp(`\\[\\[package\\]\\]\\nname = "${escaped}"\\nversion = "([^"]+)"`, "m"))?.[1],
+    version,
+  );
+}
 if (failures.length > 0) throw new Error(failures.join("\n"));
 console.log(`release versions agree with ${model.canonical}`);
