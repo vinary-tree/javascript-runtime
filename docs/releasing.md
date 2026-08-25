@@ -29,11 +29,18 @@ validation and publication are explicit manual dispatches so the complete
 cross-project tag graph and public prerequisites can be established first.
 
 The canonical tag predates protected GitHub-release approval. Append-only
-corrective source `v4.0.0-rc.4-release.1` changes only release authority and
-this runbook: it accepts positive numbered corrective refs, protects the
-checksummed prerelease behind `github-release`, and retains the protected npm
-trusted-publisher job. Package identity remains `4.0.0-rc.4`; the canonical tag
-is never moved.
+corrective source `v4.0.0-rc.4-release.1` added those authority boundaries.
+Its validate-only matrix exposed a separate topology defect: family repositories
+were cloned beneath the runtime checkout, so owner-crate Cargo builds inherited
+the runtime's `[patch.crates-io]` overlay and rejected their otherwise unchanged
+lockfiles. No package-registry job ran.
+
+Append-only corrective source `v4.0.0-rc.4-release.2` fixes the topology and
+records every family checkout in `release/version.json` as an exact immutable
+tag. Native, browser-WASM, WASI, and development integration jobs now place
+family owners beside the runtime checkout. Both the checkout helper and local
+layout validation reject nested owner roots. Package identity remains
+`4.0.0-rc.4`; neither prior tag is moved.
 
 The release workflow has two fail-closed modes. `validate-only` builds all six
 native prebuilds plus browser WebAssembly and WASI, assembles the npm tarball,
@@ -44,12 +51,12 @@ environment.
 ```bash
 gh workflow run release.yml \
   --repo vinary-tree/javascript-runtime \
-  --ref v4.0.0-rc.4-release.1 \
+  --ref v4.0.0-rc.4-release.2 \
   -f registry=validate-only
 
 gh workflow run release.yml \
   --repo vinary-tree/javascript-runtime \
-  --ref v4.0.0-rc.4-release.1 \
+  --ref v4.0.0-rc.4-release.2 \
   -f registry=npm
 ```
 
@@ -71,8 +78,8 @@ policy as npm but stores no secret; it gates only the job-scoped
    registry coordinate.
 3. Publish `libdictenstein`, `liblevenshtein`, `lling-llang`, and `duallity`
    crates at `4.0.0-rc.4` in dependency order.
-4. Build the runtime's native prebuild matrix from immutable component tags;
-   build browser WASM and WASI from the same exact versions.
+4. Build the runtime's native prebuild matrix from the exact component tags in
+   `release/version.json`; build browser WASM and WASI from the same source map.
 5. Merge the platform artifacts, run package-content and installed-tarball
    smoke tests, then publish `@vinary-tree/vinary-tree@4.0.0-rc.4` with `next`.
 6. Publish project-specific npm facades against that exact runtime.

@@ -56,34 +56,28 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with: { persist-credentials: false }
+      - uses: actions/setup-node@v6
+        with: { node-version: "24", architecture: "${{ matrix.arch }}", package-manager-cache: false }
       - name: Checkout immutable family sources
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.contract.outputs.version }}
-        run: |
-          mkdir _family
-          gh repo clone "vinary-tree/llattice" "_family/llattice" -- --branch "v0.1.0" --depth 1
-          for repository in vinary-tree-interop libdictenstein liblevenshtein-rust lling-llang duallity; do
-            gh repo clone "vinary-tree/$repository" "_family/$repository" -- --branch "v$VERSION" --depth 1
-          done
-      - uses: actions/setup-node@v6
-        with: { node-version: "24", architecture: "${{ matrix.arch }}", package-manager-cache: false }
+        run: node scripts/checkout-family-sources.mjs --parent "$GITHUB_WORKSPACE/.."
       - uses: dtolnay/rust-toolchain@1.95
       - name: Install build tool and local interop type package
         shell: bash
         run: >-
           npm install --ignore-scripts --no-save node-gyp@13.0.1
-          ./_family/vinary-tree-interop/bindings/javascript
+          ../vinary-tree-interop/bindings/javascript
       - name: Build relocatable SDK and native addon
         shell: bash
         env:
-          VINARY_TREE_INTEROP_ROOT: ${{ github.workspace }}/_family/vinary-tree-interop
-          VINARY_TREE_LLATTICE_ROOT: ${{ github.workspace }}/_family/llattice
-          VINARY_TREE_LIBDICTENSTEIN_ROOT: ${{ github.workspace }}/_family/libdictenstein
-          VINARY_TREE_LIBLEVENSHTEIN_ROOT: ${{ github.workspace }}/_family/liblevenshtein-rust
-          VINARY_TREE_LLING_LLANG_ROOT: ${{ github.workspace }}/_family/lling-llang
-          VINARY_TREE_DUALLITY_ROOT: ${{ github.workspace }}/_family/duallity
+          VINARY_TREE_INTEROP_ROOT: ${{ github.workspace }}/../vinary-tree-interop
+          VINARY_TREE_LLATTICE_ROOT: ${{ github.workspace }}/../llattice
+          VINARY_TREE_LIBDICTENSTEIN_ROOT: ${{ github.workspace }}/../libdictenstein
+          VINARY_TREE_LIBLEVENSHTEIN_ROOT: ${{ github.workspace }}/../liblevenshtein-rust
+          VINARY_TREE_LLING_LLANG_ROOT: ${{ github.workspace }}/../lling-llang
+          VINARY_TREE_DUALLITY_ROOT: ${{ github.workspace }}/../duallity
         run: |
           npm run bootstrap:native
           npm run build:native:release
@@ -103,33 +97,27 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with: { persist-credentials: false }
+      - uses: actions/setup-node@v6
+        with: { node-version: "24", package-manager-cache: false }
       - name: Checkout immutable family sources
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.contract.outputs.version }}
-        run: |
-          mkdir _family
-          gh repo clone "vinary-tree/llattice" "_family/llattice" -- --branch "v0.1.0" --depth 1
-          for repository in vinary-tree-interop libdictenstein liblevenshtein-rust lling-llang duallity; do
-            gh repo clone "vinary-tree/$repository" "_family/$repository" -- --branch "v$VERSION" --depth 1
-          done
-      - uses: actions/setup-node@v6
-        with: { node-version: "24", package-manager-cache: false }
+        run: node scripts/checkout-family-sources.mjs --parent "$GITHUB_WORKSPACE/.."
       - uses: dtolnay/rust-toolchain@1.95
         with: { targets: "wasm32-unknown-unknown,wasm32-wasip1" }
       - uses: jetli/wasm-pack-action@v0.4.0
         with: { version: v0.13.1 }
       - run: bash .github/setup-binaryen.sh
       - name: Install local interop type package
-        run: npm install --ignore-scripts --no-save ./_family/vinary-tree-interop/bindings/javascript
+        run: npm install --ignore-scripts --no-save ../vinary-tree-interop/bindings/javascript
       - name: Build and test both WebAssembly hosts
         env:
-          VINARY_TREE_INTEROP_ROOT: ${{ github.workspace }}/_family/vinary-tree-interop
-          VINARY_TREE_LLATTICE_ROOT: ${{ github.workspace }}/_family/llattice
-          VINARY_TREE_LIBDICTENSTEIN_ROOT: ${{ github.workspace }}/_family/libdictenstein
-          VINARY_TREE_LIBLEVENSHTEIN_ROOT: ${{ github.workspace }}/_family/liblevenshtein-rust
-          VINARY_TREE_LLING_LLANG_ROOT: ${{ github.workspace }}/_family/lling-llang
-          VINARY_TREE_DUALLITY_ROOT: ${{ github.workspace }}/_family/duallity
+          VINARY_TREE_INTEROP_ROOT: ${{ github.workspace }}/../vinary-tree-interop
+          VINARY_TREE_LLATTICE_ROOT: ${{ github.workspace }}/../llattice
+          VINARY_TREE_LIBDICTENSTEIN_ROOT: ${{ github.workspace }}/../libdictenstein
+          VINARY_TREE_LIBLEVENSHTEIN_ROOT: ${{ github.workspace }}/../liblevenshtein-rust
+          VINARY_TREE_LLING_LLANG_ROOT: ${{ github.workspace }}/../lling-llang
+          VINARY_TREE_DUALLITY_ROOT: ${{ github.workspace }}/../duallity
         run: |
           npm run configure:local
           npm run build:wasm

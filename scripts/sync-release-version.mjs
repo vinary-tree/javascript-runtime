@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { validateSourceRefs } from "./release-source-refs.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const model = JSON.parse(readFileSync(join(root, "release", "version.json"), "utf8"));
@@ -113,7 +114,8 @@ const failures = [];
 const expect = (name, actual, wanted) => {
   if (actual !== wanted) failures.push(`${name}: expected ${wanted}, got ${actual}`);
 };
-expect("corrective source tag", model.sourceTag, `v${model.canonical}-release.1`);
+expect("corrective source tag", model.sourceTag, `v${model.canonical}-release.2`);
+validateSourceRefs(model);
 const releaseWorkflow = readFileSync(join(root, ".github", "workflows", "release.yml"), "utf8");
 for (const marker of [
   "scripts/check-release-ref.mjs",

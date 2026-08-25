@@ -28,44 +28,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with: { persist-credentials: false }
-      - uses: actions/checkout@v6
-        with:
-          repository: vinary-tree/vinary-tree-interop
-          ref: master
-          path: _family/vinary-tree-interop
-          persist-credentials: false
-      - uses: actions/checkout@v6
-        with:
-          repository: vinary-tree/llattice
-          ref: v0.1.0
-          path: _family/llattice
-          persist-credentials: false
-      - uses: actions/checkout@v6
-        with:
-          repository: vinary-tree/libdictenstein
-          ref: master
-          path: _family/libdictenstein
-          persist-credentials: false
-      - uses: actions/checkout@v6
-        with:
-          repository: vinary-tree/liblevenshtein-rust
-          ref: master
-          path: _family/liblevenshtein-rust
-          persist-credentials: false
-      - uses: actions/checkout@v6
-        with:
-          repository: vinary-tree/lling-llang
-          ref: release/4.0.0-rc.4
-          path: _family/lling-llang
-          persist-credentials: false
-      - uses: actions/checkout@v6
-        with:
-          repository: vinary-tree/duallity
-          ref: release/4.0.0-rc.4
-          path: _family/duallity
-          persist-credentials: false
       - uses: actions/setup-node@v6
         with: { node-version: "24", package-manager-cache: false }
+      - name: Checkout development family sources outside runtime Cargo scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/checkout-family-sources.mjs --development --parent "$GITHUB_WORKSPACE/.."
       - uses: dtolnay/rust-toolchain@1.95
         with: { targets: "wasm32-unknown-unknown,wasm32-wasip1" }
       - uses: jetli/wasm-pack-action@v0.4.0
@@ -75,15 +43,15 @@ jobs:
       - name: Install build tool and local interop type package
         run: >-
           npm install --ignore-scripts --no-save node-gyp@13.0.1
-          ./_family/vinary-tree-interop/bindings/javascript
+          ../vinary-tree-interop/bindings/javascript
       - name: Build and test integrated backends
         env:
-          VINARY_TREE_INTEROP_ROOT: ${{ github.workspace }}/_family/vinary-tree-interop
-          VINARY_TREE_LLATTICE_ROOT: ${{ github.workspace }}/_family/llattice
-          VINARY_TREE_LIBDICTENSTEIN_ROOT: ${{ github.workspace }}/_family/libdictenstein
-          VINARY_TREE_LIBLEVENSHTEIN_ROOT: ${{ github.workspace }}/_family/liblevenshtein-rust
-          VINARY_TREE_LLING_LLANG_ROOT: ${{ github.workspace }}/_family/lling-llang
-          VINARY_TREE_DUALLITY_ROOT: ${{ github.workspace }}/_family/duallity
+          VINARY_TREE_INTEROP_ROOT: ${{ github.workspace }}/../vinary-tree-interop
+          VINARY_TREE_LLATTICE_ROOT: ${{ github.workspace }}/../llattice
+          VINARY_TREE_LIBDICTENSTEIN_ROOT: ${{ github.workspace }}/../libdictenstein
+          VINARY_TREE_LIBLEVENSHTEIN_ROOT: ${{ github.workspace }}/../liblevenshtein-rust
+          VINARY_TREE_LLING_LLANG_ROOT: ${{ github.workspace }}/../lling-llang
+          VINARY_TREE_DUALLITY_ROOT: ${{ github.workspace }}/../duallity
         run: |
           npm run configure:local
           npm run bootstrap:native

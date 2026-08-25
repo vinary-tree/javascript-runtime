@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const runtimeRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -17,8 +17,19 @@ export const componentRoots = Object.freeze({
   llingLlang: component("VINARY_TREE_LLING_LLANG_ROOT", "lling-llang"),
 });
 
+const isWithin = (parent, candidate) => {
+  const path = relative(parent, candidate);
+  return path === "" || (!path.startsWith("..") && !isAbsolute(path));
+};
+
 export function requireComponentRoots() {
   for (const [name, root] of Object.entries(componentRoots)) {
+    if (isWithin(runtimeRoot, root)) {
+      throw new Error(
+        `${name} must be checked out beside ${runtimeRoot}, not beneath it; ` +
+        "nested owner builds inherit the runtime Cargo patch overlay",
+      );
+    }
     if (!existsSync(join(root, "Cargo.toml"))) {
       throw new Error(`${name} Cargo.toml is missing under ${root}`);
     }

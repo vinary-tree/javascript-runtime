@@ -3,6 +3,8 @@ set -euo pipefail
 
 node scripts/sync-release-version.mjs
 node scripts/check-release-ref.mjs --self-test
+node scripts/release-source-refs.mjs --self-test
+node scripts/checkout-family-sources.mjs --self-test
 node scripts/stage-license.mjs
 
 while IFS= read -r source; do
