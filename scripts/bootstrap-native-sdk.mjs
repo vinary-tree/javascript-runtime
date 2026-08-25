@@ -42,12 +42,16 @@ function runCargo(build) {
     "build",
     "--manifest-path", join(build.root, "Cargo.toml"),
     "--target-dir", join(buildRoot, build.key),
+    "--locked",
     "--release",
     "--lib",
     "--no-default-features",
     "--features", "native-bindings-full",
   ];
-  const result = spawnSync("cargo", args, { cwd: runtimeRoot, stdio: "inherit" });
+  // Build from the owning crate so Cargo applies that repository's portable
+  // target configuration without leaking the runtime-only patch overlay into
+  // an independent package's lockfile as `patch.unused` metadata.
+  const result = spawnSync("cargo", args, { cwd: build.root, stdio: "inherit" });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`cargo build failed for ${build.key}`);
 }
