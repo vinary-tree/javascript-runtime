@@ -4,6 +4,7 @@
   "canonical": "4.0.0-rc.4",
   "npm": "4.0.0-rc.4",
   "distTag": "next",
+  "sourceTag": "v4.0.0-rc.4-release.1",
   "nativePrebuilds": [
     "linux-x64",
     "linux-arm64",

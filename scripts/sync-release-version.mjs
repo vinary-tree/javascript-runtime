@@ -113,6 +113,15 @@ const failures = [];
 const expect = (name, actual, wanted) => {
   if (actual !== wanted) failures.push(`${name}: expected ${wanted}, got ${actual}`);
 };
+expect("corrective source tag", model.sourceTag, `v${model.canonical}-release.1`);
+const releaseWorkflow = readFileSync(join(root, ".github", "workflows", "release.yml"), "utf8");
+for (const marker of [
+  "scripts/check-release-ref.mjs",
+  'environment: github-release',
+  'environment: npm',
+]) {
+  if (!releaseWorkflow.includes(marker)) failures.push(`release workflow is missing ${marker}`);
+}
 expect("npm", packageJson.version, model.npm);
 expect("npm interop", packageJson.dependencies["@vinary-tree/interop"], model.dependencies["@vinary-tree/interop"]);
 expect("npm dist-tag", packageJson.publishConfig.tag, model.distTag);

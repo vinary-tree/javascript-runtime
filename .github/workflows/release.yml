@@ -33,11 +33,10 @@ jobs:
         run: |
           ./scripts/verify.sh
           version=$(node -p 'require("./release/version.json").canonical')
-          if [[ "$GITHUB_REF" != refs/tags/* ]]; then
-            echo "::error::Manual releases must be dispatched against an immutable tag." >&2
-            exit 1
-          fi
-          test "$GITHUB_REF_NAME" = "v$version"
+          node scripts/check-release-ref.mjs \
+            --ref "$GITHUB_REF" \
+            --ref-name "$GITHUB_REF_NAME" \
+            --registry "${{ inputs.registry }}"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
   native-prebuild:
@@ -187,6 +186,7 @@ jobs:
       github.ref_type == 'tag' &&
       inputs.registry == 'validate-only'
     runs-on: ubuntu-24.04
+    environment: github-release
     permissions: { contents: write }
     steps:
       - uses: actions/download-artifact@v7

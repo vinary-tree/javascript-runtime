@@ -28,6 +28,13 @@ Pushing the annotated tag creates only the immutable source ref. Release
 validation and publication are explicit manual dispatches so the complete
 cross-project tag graph and public prerequisites can be established first.
 
+The canonical tag predates protected GitHub-release approval. Append-only
+corrective source `v4.0.0-rc.4-release.1` changes only release authority and
+this runbook: it accepts positive numbered corrective refs, protects the
+checksummed prerelease behind `github-release`, and retains the protected npm
+trusted-publisher job. Package identity remains `4.0.0-rc.4`; the canonical tag
+is never moved.
+
 The release workflow has two fail-closed modes. `validate-only` builds all six
 native prebuilds plus browser WebAssembly and WASI, assembles the npm tarball,
 verifies its contents, and creates the checksummed GitHub prerelease. `npm`
@@ -37,12 +44,12 @@ environment.
 ```bash
 gh workflow run release.yml \
   --repo vinary-tree/javascript-runtime \
-  --ref v4.0.0-rc.4 \
+  --ref v4.0.0-rc.4-release.1 \
   -f registry=validate-only
 
 gh workflow run release.yml \
   --repo vinary-tree/javascript-runtime \
-  --ref v4.0.0-rc.4 \
+  --ref v4.0.0-rc.4-release.1 \
   -f registry=npm
 ```
 
@@ -51,6 +58,10 @@ building, and there is no multi-registry or bypass mode. The `npm` job uses the
 repository's trusted publisher, provenance, and protected `npm` environment;
 the local npm login is used only for read-back verification and dist-tag
 management after publication.
+
+The `github-release` environment has the same required reviewer and `v*` tag
+policy as npm but stores no secret; it gates only the job-scoped
+`GITHUB_TOKEN` used to create the checksummed prerelease.
 
 ## Required order
 

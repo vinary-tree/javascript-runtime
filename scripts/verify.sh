@@ -2,6 +2,7 @@
 set -euo pipefail
 
 node scripts/sync-release-version.mjs
+node scripts/check-release-ref.mjs --self-test
 node scripts/stage-license.mjs
 
 while IFS= read -r source; do
