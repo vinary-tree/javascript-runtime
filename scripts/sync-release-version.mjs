@@ -114,7 +114,7 @@ const failures = [];
 const expect = (name, actual, wanted) => {
   if (actual !== wanted) failures.push(`${name}: expected ${wanted}, got ${actual}`);
 };
-expect("corrective source tag", model.sourceTag, `v${model.canonical}-release.2`);
+expect("corrective source tag", model.sourceTag, `v${model.canonical}-release.3`);
 validateSourceRefs(model);
 const releaseWorkflow = readFileSync(join(root, ".github", "workflows", "release.yml"), "utf8");
 for (const marker of [

@@ -68,7 +68,7 @@ function selfTest() {
       duallity: "4.0.0-rc.4",
     },
     sourceRefs: {
-      "vinary-tree-interop": "v4.0.0-rc.4-release.2",
+      "vinary-tree-interop": "v4.0.0-rc.4-release.3",
       llattice: "v0.1.0",
       libdictenstein: "v4.0.0-rc.4-release.1",
       "liblevenshtein-rust": "v4.0.0-rc.4-release.3",

@@ -42,6 +42,15 @@ family owners beside the runtime checkout. Both the checkout helper and local
 layout validation reject nested owner roots. Package identity remains
 `4.0.0-rc.4`; neither prior tag is moved.
 
+The exact-source gate then exposed a malformed CRLF blob in interop's Windows
+Gradle launcher: a fresh checkout of the otherwise exact tag appeared locally
+modified after Git applied the declared `text eol=crlf` filter. Interop
+corrective source `v4.0.0-rc.4-release.3` stores canonical LF object data and
+retains CRLF checkout semantics. Runtime corrective source
+`v4.0.0-rc.4-release.3` changes only the immutable source map to consume that
+interop correction. It preserves the package version, platform topology, and
+all other owner refs from runtime release.2.
+
 The release workflow has two fail-closed modes. `validate-only` builds all six
 native prebuilds plus browser WebAssembly and WASI, assembles the npm tarball,
 verifies its contents, and creates the checksummed GitHub prerelease. `npm`
@@ -51,12 +60,12 @@ environment.
 ```bash
 gh workflow run release.yml \
   --repo vinary-tree/javascript-runtime \
-  --ref v4.0.0-rc.4-release.2 \
+  --ref v4.0.0-rc.4-release.3 \
   -f registry=validate-only
 
 gh workflow run release.yml \
   --repo vinary-tree/javascript-runtime \
-  --ref v4.0.0-rc.4-release.2 \
+  --ref v4.0.0-rc.4-release.3 \
   -f registry=npm
 ```
 
