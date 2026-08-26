@@ -1,4 +1,14 @@
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = dirname(dirname(fileURLToPath(import.meta.url)));
+const release = JSON.parse(readFileSync(join(root, "release", "version.json"), "utf8"));
+const packageName = release.coordinates?.npmPackage;
+if (packageName !== "@vinary-tree/javascript-runtime") {
+  throw new Error("release manifest does not name the canonical JavaScript runtime package");
+}
 
 const result = spawnSync("npm", ["pack", "--dry-run", "--ignore-scripts", "--json"], {
   encoding: "utf8",
@@ -11,7 +21,7 @@ const report = Array.isArray(parsed)
   ? parsed[0]
   : parsed.files
     ? parsed
-    : parsed["@vinary-tree/vinary-tree"] ?? Object.values(parsed)[0];
+    : parsed[packageName] ?? Object.values(parsed)[0];
 if (!report || !Array.isArray(report.files)) {
   throw new Error("npm pack returned no package file report");
 }

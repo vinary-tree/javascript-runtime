@@ -60,31 +60,31 @@ export function readReleaseModel() {
 function selfTest() {
   const valid = {
     dependencies: {
-      "vinary-tree-interop": "4.0.0-rc.4",
+      "vinary-tree-interop": "4.0.0-rc.5",
       llattice: "0.1.0",
-      libdictenstein: "4.0.0-rc.4",
-      liblevenshtein: "4.0.0-rc.4",
-      "lling-llang": "4.0.0-rc.4",
-      duallity: "4.0.0-rc.4",
+      libdictenstein: "4.0.0-rc.5",
+      liblevenshtein: "4.0.0-rc.5",
+      "lling-llang": "4.0.0-rc.5",
+      duallity: "4.0.0-rc.5",
     },
     sourceRefs: {
-      "vinary-tree-interop": "v4.0.0-rc.4-release.3",
+      "vinary-tree-interop": "v4.0.0-rc.5",
       llattice: "v0.1.0",
-      libdictenstein: "v4.0.0-rc.4-release.1",
-      "liblevenshtein-rust": "v4.0.0-rc.4-release.3",
-      "lling-llang": "v4.0.0-rc.4-release.1",
-      duallity: "v4.0.0-rc.4-release.1",
+      libdictenstein: "v4.0.0-rc.5",
+      "liblevenshtein-rust": "v4.0.0-rc.5",
+      "lling-llang": "v4.0.0-rc.5",
+      duallity: "v4.0.0-rc.5",
     },
   };
   validateSourceRefs(valid);
   const mutations = [
     (model) => delete model.sourceRefs.duallity,
-    (model) => { model.sourceRefs.unexpected = "v4.0.0-rc.4"; },
+    (model) => { model.sourceRefs.unexpected = "v4.0.0-rc.5"; },
     (model) => { model.sourceRefs.libdictenstein = "master"; },
     (model) => { model.sourceRefs.libdictenstein = "208d9cd6ccfc4993acddd3c166bb314049dfb258"; },
     (model) => { model.sourceRefs.libdictenstein = "v4.0.0-rc.3"; },
-    (model) => { model.sourceRefs.libdictenstein = "v4.0.0-rc.4-release.0"; },
-    (model) => { model.sourceRefs.libdictenstein = "v4.0.0-rc.4-release.next"; },
+    (model) => { model.sourceRefs.libdictenstein = "v4.0.0-rc.5-release.0"; },
+    (model) => { model.sourceRefs.libdictenstein = "v4.0.0-rc.5-release.next"; },
   ];
   for (const mutate of mutations) {
     const malformed = structuredClone(valid);

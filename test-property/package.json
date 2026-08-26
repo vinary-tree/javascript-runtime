@@ -1,6 +1,6 @@
 {
-  "name": "@vinary-tree/vinary-tree-property-tests",
-  "version": "4.0.0-rc.4",
+  "name": "@vinary-tree/javascript-runtime-property-tests",
+  "version": "4.0.0-rc.5",
   "private": true,
   "type": "module",
   "description": "C8 fast-check property tests for the native runtime in an isolated private package",

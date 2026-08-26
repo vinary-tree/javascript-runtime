@@ -1,4 +1,4 @@
-# Releasing `@vinary-tree/vinary-tree`
+# Releasing `@vinary-tree/javascript-runtime`
 
 The runtime is a downstream assembly artifact. It must never publish before
 the exact Rust crates and shared interop package it consumes are publicly
@@ -9,11 +9,14 @@ resolvable.
 ## Release identity
 
 `release/version.json` is authoritative. For this train, every Rust and npm
-coordinate is `4.0.0-rc.4`, and npm publication uses the `next` distribution
+coordinate is `4.0.0-rc.5`, and npm publication uses the `next` distribution
 tag. npm's first-publication behavior assigned `latest` to the inert `0.0.0`
 bootstrap reservation. After the OIDC-published runtime passes installed
 native, WASM, and WASI smoke tests, retarget the new scoped package's `latest`
-pointer to `4.0.0-rc.4`, remove `bootstrap`, and deprecate `0.0.0`.
+pointer to `4.0.0-rc.5`, remove `bootstrap`, and deprecate `0.0.0`.
+The [npm coordinate migration](npm-coordinate-migration.md) records the exact
+identity correction and the compatibility policy for the immutable RC4
+artifacts.
 
 The runtime's exact Rust requirements deliberately reject a mixed family. The
 development overlay changes only source location; it does not relax versions.
@@ -24,32 +27,9 @@ lockfile. Every component lock must remain byte-for-byte unchanged.
 
 ## Exact-tag workflow protocol
 
-Pushing the annotated tag creates only the immutable source ref. Release
+Pushing the annotated `v4.0.0-rc.5` tag creates only the immutable source ref. Release
 validation and publication are explicit manual dispatches so the complete
 cross-project tag graph and public prerequisites can be established first.
-
-The canonical tag predates protected GitHub-release approval. Append-only
-corrective source `v4.0.0-rc.4-release.1` added those authority boundaries.
-Its validate-only matrix exposed a separate topology defect: family repositories
-were cloned beneath the runtime checkout, so owner-crate Cargo builds inherited
-the runtime's `[patch.crates-io]` overlay and rejected their otherwise unchanged
-lockfiles. No package-registry job ran.
-
-Append-only corrective source `v4.0.0-rc.4-release.2` fixes the topology and
-records every family checkout in `release/version.json` as an exact immutable
-tag. Native, browser-WASM, WASI, and development integration jobs now place
-family owners beside the runtime checkout. Both the checkout helper and local
-layout validation reject nested owner roots. Package identity remains
-`4.0.0-rc.4`; neither prior tag is moved.
-
-The exact-source gate then exposed a malformed CRLF blob in interop's Windows
-Gradle launcher: a fresh checkout of the otherwise exact tag appeared locally
-modified after Git applied the declared `text eol=crlf` filter. Interop
-corrective source `v4.0.0-rc.4-release.3` stores canonical LF object data and
-retains CRLF checkout semantics. Runtime corrective source
-`v4.0.0-rc.4-release.3` changes only the immutable source map to consume that
-interop correction. It preserves the package version, platform topology, and
-all other owner refs from runtime release.2.
 
 The release workflow has two fail-closed modes. `validate-only` builds all six
 native prebuilds plus browser WebAssembly and WASI, assembles the npm tarball,
@@ -60,12 +40,12 @@ environment.
 ```bash
 gh workflow run release.yml \
   --repo vinary-tree/javascript-runtime \
-  --ref v4.0.0-rc.4-release.3 \
+  --ref v4.0.0-rc.5 \
   -f registry=validate-only
 
 gh workflow run release.yml \
   --repo vinary-tree/javascript-runtime \
-  --ref v4.0.0-rc.4-release.3 \
+  --ref v4.0.0-rc.5 \
   -f registry=npm
 ```
 
@@ -79,6 +59,31 @@ The `github-release` environment has the same required reviewer and `v*` tag
 policy as npm but stores no secret; it gates only the job-scoped
 `GITHUB_TOKEN` used to create the checksummed prerelease.
 
+### RC4 historical source record
+
+The RC4 canonical tag predated protected GitHub-release approval. Append-only
+corrective source `v4.0.0-rc.4-release.1` added those authority boundaries.
+Its validate-only matrix exposed a separate topology defect: family repositories
+were cloned beneath the runtime checkout, so owner-crate Cargo builds inherited
+the runtime's `[patch.crates-io]` overlay and rejected their otherwise unchanged
+lockfiles. No package-registry job ran.
+
+Append-only corrective source `v4.0.0-rc.4-release.2` fixed the topology and
+recorded every family checkout in `release/version.json` as an exact immutable
+tag. Native, browser-WASM, WASI, and development integration jobs place family
+owners beside the runtime checkout. Both the checkout helper and local layout
+validation reject nested owner roots. RC4 package identity remained immutable;
+neither prior tag was moved.
+
+The exact-source gate then exposed a malformed CRLF blob in interop's Windows
+Gradle launcher: a fresh checkout of the otherwise exact tag appeared locally
+modified after Git applied the declared `text eol=crlf` filter. Interop
+corrective source `v4.0.0-rc.4-release.3` stores canonical LF object data and
+retains CRLF checkout semantics. Runtime corrective source
+`v4.0.0-rc.4-release.3` changed only the immutable source map to consume that
+interop correction. It preserved the package version, platform topology, and
+all other owner refs from runtime release.2.
+
 ## Required order
 
 1. Publish independent leaf crate `llattice` at its own `0.1.0` version if the
@@ -86,13 +91,14 @@ policy as npm but stores no secret; it gates only the job-scoped
 2. Publish `vinary-tree-interop` and verify installation from each supported
    registry coordinate.
 3. Publish `libdictenstein`, `liblevenshtein`, `lling-llang`, and `duallity`
-   crates at `4.0.0-rc.4` in dependency order.
+   crates at `4.0.0-rc.5` in dependency order.
 4. Build the runtime's native prebuild matrix from the exact component tags in
    `release/version.json`; build browser WASM and WASI from the same source map.
 5. Merge the platform artifacts, run package-content and installed-tarball
-   smoke tests, then publish `@vinary-tree/vinary-tree@4.0.0-rc.4` with `next`.
+   smoke tests, then publish `@vinary-tree/javascript-runtime@4.0.0-rc.5` with
+   `next`.
 6. Publish project-specific npm facades against that exact runtime.
-7. Publish the unscoped `liblevenshtein@4.0.0-rc.4` compatibility facade with
+7. Publish the unscoped `liblevenshtein@4.0.0-rc.5` compatibility facade with
    `next`; do not change the legacy `latest` tag.
 
 ## Native platform matrix

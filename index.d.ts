@@ -1,6 +1,6 @@
 /// <reference lib="esnext.disposable" />
 
-import type { DictionaryResource, RuntimeIdentity, UnitDomain } from "@vinary-tree/interop";
+import type { DictionaryResource, RuntimeIdentity, UnitDomain } from "@vinary-tree/vinary-tree-interop";
 
 export type Algorithm = "standard" | "transposition" | "merge-and-split" | "damerau-levenshtein";
 export type QueryOrder = "traversal" | "distance-then-term";

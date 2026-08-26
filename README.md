@@ -1,6 +1,6 @@
 # Vinary Tree JavaScript runtime
 
-`@vinary-tree/vinary-tree` is the single-instance JavaScript runtime for
+`@vinary-tree/javascript-runtime` is the single-instance JavaScript runtime for
 libdictenstein, liblevenshtein, lling-llang, and duallity. It lets their
 project-specific facades exchange retained dictionaries and weighted
 finite-state transducers (WFSTs) without copying or loading incompatible native
@@ -8,7 +8,7 @@ runtimes.
 
 | Release property | Value |
 |---|---|
-| Candidate | `4.0.0-rc.4` |
+| Candidate | `4.0.0-rc.5` |
 | npm dist-tag | `next` |
 | Node | 22.14 or newer |
 | Backends | Native N-API, browser WebAssembly, Node WASI |
@@ -17,12 +17,12 @@ runtimes.
 ## Install the release candidate
 
 ```sh
-npm install @vinary-tree/vinary-tree@next
+npm install @vinary-tree/javascript-runtime@next
 ```
 
 Use the package root for Node's native backend,
-`@vinary-tree/vinary-tree/wasm` in a browser, or
-`@vinary-tree/vinary-tree/wasi` when Node/WASI filesystem preopens are needed.
+`@vinary-tree/javascript-runtime/wasm` in a browser, or
+`@vinary-tree/javascript-runtime/wasi` when Node/WASI filesystem preopens are needed.
 Applications normally install a project facade rather than importing the
 shared runtime directly.
 
@@ -32,7 +32,7 @@ Dictionaries follow the synchronous `Map` vocabulary while retaining explicit
 native lifetime control:
 
 ```js
-import { libdictenstein, liblevenshtein } from "@vinary-tree/vinary-tree";
+import { libdictenstein, liblevenshtein } from "@vinary-tree/javascript-runtime";
 
 using dictionary = libdictenstein.dynamicDawg("unicode");
 dictionary.set("cat", 1n).set("cot", 2n).set("cut", null);
@@ -60,9 +60,9 @@ Garbage collection is exceptional-path containment, not resource scheduling.
 
 | Import | Backend | Intended host |
 |---|---|---|
-| `@vinary-tree/vinary-tree` | Prebuilt N-API addon | Node services and tools |
-| `@vinary-tree/vinary-tree/wasm` | `wasm-bindgen` module | Browsers and web workers |
-| `@vinary-tree/vinary-tree/wasi` | Explicit WASI linear-memory ABI | Node with preopened persistent storage |
+| `@vinary-tree/javascript-runtime` | Prebuilt N-API addon | Node services and tools |
+| `@vinary-tree/javascript-runtime/wasm` | `wasm-bindgen` module | Browsers and web workers |
+| `@vinary-tree/javascript-runtime/wasi` | Explicit WASI linear-memory ABI | Node with preopened persistent storage |
 
 All three expose the same snapshot, collection, query, and WFST semantics.
 Resources carry an immutable runtime identity; passing a resource between
@@ -93,6 +93,7 @@ directories.
 - [Architecture and invariants](docs/architecture.md)
 - [Testing strategy and property models](docs/testing.md)
 - [Release order, platform matrix, and rollback](docs/releasing.md)
+- [npm coordinate migration and compatibility](docs/npm-coordinate-migration.md)
 - [History-preserving extraction provenance](docs/extraction-provenance.md)
 
 The project-specific packages own their idiomatic user APIs. This repository

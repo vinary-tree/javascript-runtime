@@ -12,8 +12,8 @@ const developmentRefs = Object.freeze({
   llattice: "v0.1.0",
   libdictenstein: "master",
   "liblevenshtein-rust": "master",
-  "lling-llang": "release/4.0.0-rc.4",
-  duallity: "release/4.0.0-rc.4",
+  "lling-llang": "master",
+  duallity: "master",
 });
 
 export function validateCheckoutParent(value) {

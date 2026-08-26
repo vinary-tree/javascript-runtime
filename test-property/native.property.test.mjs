@@ -1,7 +1,7 @@
 // C8 native property-based tests for the javascript-runtime facade (fast-check).
 //
 // This suite lives in an isolated package whose only dependency is fast-check,
-// so `npm install` never has to resolve the unpublished @vinary-tree/interop
+// so `npm install` never has to resolve the unpublished @vinary-tree/vinary-tree-interop
 // sibling that the umbrella package declares. It imports the native runtime by
 // relative path (`../native.mjs`), which loads the prebuilt N-API addon.
 //

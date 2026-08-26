@@ -10,7 +10,7 @@ try {
   ffi = require(addon);
 } catch (cause) {
   throw new Error(
-    `@vinary-tree/vinary-tree has no usable native addon for ${platform}; `
+    `@vinary-tree/javascript-runtime has no usable native addon for ${platform}; `
       + "install a supported prebuilt package or build the addon from source",
     { cause },
   );

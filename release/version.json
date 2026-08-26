@@ -1,10 +1,14 @@
 {
   "schemaVersion": 1,
   "component": "javascript-runtime",
-  "canonical": "4.0.0-rc.4",
-  "npm": "4.0.0-rc.4",
+  "canonical": "4.0.0-rc.5",
+  "coordinates": {
+    "npmPackage": "@vinary-tree/javascript-runtime",
+    "npmPropertyTestPackage": "@vinary-tree/javascript-runtime-property-tests"
+  },
+  "npm": "4.0.0-rc.5",
   "distTag": "next",
-  "sourceTag": "v4.0.0-rc.4-release.3",
+  "sourceTag": "v4.0.0-rc.5",
   "nativePrebuilds": [
     "linux-x64",
     "linux-arm64",
@@ -14,20 +18,20 @@
     "win32-arm64"
   ],
   "dependencies": {
-    "duallity": "4.0.0-rc.4",
+    "duallity": "4.0.0-rc.5",
     "llattice": "0.1.0",
-    "libdictenstein": "4.0.0-rc.4",
-    "liblevenshtein": "4.0.0-rc.4",
-    "lling-llang": "4.0.0-rc.4",
-    "vinary-tree-interop": "4.0.0-rc.4",
-    "@vinary-tree/interop": "4.0.0-rc.4"
+    "libdictenstein": "4.0.0-rc.5",
+    "liblevenshtein": "4.0.0-rc.5",
+    "lling-llang": "4.0.0-rc.5",
+    "vinary-tree-interop": "4.0.0-rc.5",
+    "@vinary-tree/vinary-tree-interop": "4.0.0-rc.5"
   },
   "sourceRefs": {
-    "vinary-tree-interop": "v4.0.0-rc.4-release.3",
+    "vinary-tree-interop": "v4.0.0-rc.5",
     "llattice": "v0.1.0",
-    "libdictenstein": "v4.0.0-rc.4-release.1",
-    "liblevenshtein-rust": "v4.0.0-rc.4-release.3",
-    "lling-llang": "v4.0.0-rc.4-release.1",
-    "duallity": "v4.0.0-rc.4-release.1"
+    "libdictenstein": "v4.0.0-rc.5",
+    "liblevenshtein-rust": "v4.0.0-rc.5",
+    "lling-llang": "v4.0.0-rc.5",
+    "duallity": "v4.0.0-rc.5"
   }
 }

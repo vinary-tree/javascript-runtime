@@ -1,4 +1,4 @@
-import type { RuntimeIdentity, UnitDomain } from "@vinary-tree/interop";
+import type { RuntimeIdentity, UnitDomain } from "@vinary-tree/vinary-tree-interop";
 import type {
   Dictionary, QueryCursor, Algorithm, LlingLlangNamespace, DuallityNamespace,
 } from "./index.js";
