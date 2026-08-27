@@ -68,7 +68,7 @@ jobs:
         shell: bash
         run: >-
           npm install --ignore-scripts --no-save node-gyp@13.0.1
-          ../vinary-tree-interop/bindings/javascript
+          "@vinary-tree/vinary-tree-interop@file:../vinary-tree-interop/bindings/javascript"
       - name: Build relocatable SDK and native addon
         shell: bash
         env:
@@ -109,7 +109,9 @@ jobs:
         with: { version: v0.13.1 }
       - run: bash .github/setup-binaryen.sh
       - name: Install local interop type package
-        run: npm install --ignore-scripts --no-save ../vinary-tree-interop/bindings/javascript
+        run: >-
+          npm install --ignore-scripts --no-save
+          "@vinary-tree/vinary-tree-interop@file:../vinary-tree-interop/bindings/javascript"
       - name: Build and test both WebAssembly hosts
         env:
           VINARY_TREE_INTEROP_ROOT: ${{ github.workspace }}/../vinary-tree-interop

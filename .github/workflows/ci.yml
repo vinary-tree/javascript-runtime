@@ -33,7 +33,12 @@ jobs:
       - name: Checkout development family sources outside runtime Cargo scope
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/checkout-family-sources.mjs --development --parent "$GITHUB_WORKSPACE/.."
+          DEVELOPMENT_REF: ${{ github.head_ref || github.ref_name }}
+        run: >-
+          node scripts/checkout-family-sources.mjs
+          --development
+          --development-ref "$DEVELOPMENT_REF"
+          --parent "$GITHUB_WORKSPACE/.."
       - uses: dtolnay/rust-toolchain@1.95
         with: { targets: "wasm32-unknown-unknown,wasm32-wasip1" }
       - uses: jetli/wasm-pack-action@v0.4.0
@@ -43,7 +48,7 @@ jobs:
       - name: Install build tool and local interop type package
         run: >-
           npm install --ignore-scripts --no-save node-gyp@13.0.1
-          ../vinary-tree-interop/bindings/javascript
+          "@vinary-tree/vinary-tree-interop@file:../vinary-tree-interop/bindings/javascript"
       - name: Build and test integrated backends
         env:
           VINARY_TREE_INTEROP_ROOT: ${{ github.workspace }}/../vinary-tree-interop
