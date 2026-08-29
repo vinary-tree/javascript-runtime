@@ -11,6 +11,7 @@ if (packageName !== "@vinary-tree/javascript-runtime") {
 }
 
 const result = spawnSync("npm", ["pack", "--dry-run", "--ignore-scripts", "--json"], {
+  cwd: root,
   encoding: "utf8",
   stdio: ["ignore", "pipe", "inherit"],
 });
@@ -29,6 +30,7 @@ const paths = new Set(report.files.map((entry) => entry.path));
 for (const required of [
   "LICENSE",
   "README.md",
+  "docs/api-reference.md",
   "index.d.ts",
   "native.mjs",
   "native.cjs",

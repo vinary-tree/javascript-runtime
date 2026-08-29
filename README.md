@@ -90,12 +90,14 @@ directories.
 
 ## Documentation
 
+- [Complete JavaScript and TypeScript API reference](docs/api-reference.md)
 - [Architecture and invariants](docs/architecture.md)
 - [Testing strategy and property models](docs/testing.md)
 - [Release order, platform matrix, and rollback](docs/releasing.md)
 - [npm coordinate migration and compatibility](docs/npm-coordinate-migration.md)
 - [History-preserving extraction provenance](docs/extraction-provenance.md)
 
-The project-specific packages own their idiomatic user APIs. This repository
-owns only the common native/WASM/WASI implementation, runtime identity, package
-assembly, and cross-project integration tests.
+Project-specific packages may present narrower idiomatic facades. This
+repository owns and documents the complete shared native/WASM/WASI API they
+consume, together with runtime identity, package assembly, and cross-project
+integration tests.

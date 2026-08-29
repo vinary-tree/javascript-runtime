@@ -38,6 +38,7 @@
   "files": [
     "LICENSE",
     "README.md",
+    "docs/api-reference.md",
     "index.d.ts",
     "runtime-factory.mjs",
     "native.mjs",
@@ -72,6 +73,7 @@
     "test:property": "npm --prefix test-property install --no-audit --no-fund && node --test test-property/native.property.test.mjs",
     "test": "node --test test/browser-wasm.test.mjs test/wasi.test.mjs",
     "verify:license": "node scripts/stage-license.mjs",
+    "verify:docs": "node scripts/check-docs.mjs",
     "verify:version": "node scripts/sync-release-version.mjs",
     "verify:prebuilds": "node scripts/verify-native-prebuilds.mjs",
     "verify:package": "node scripts/verify-package.mjs",
