@@ -224,6 +224,71 @@ test("native phonetic pattern size and rule-set size", () => {
   builtin.close();
 });
 
+test("native llrePattern compiles an import-free .llre document", () => {
+  const pattern = liblevenshtein.llrePattern(`
+    @name "Greeting"
+    ^hello$
+  `);
+  try {
+    assert.equal(pattern.matches("hello"), true);
+    assert.equal(pattern.matches("world"), false);
+    assert.ok(pattern.size.states > 0);
+    assert.ok(pattern.size.transitions > 0);
+  } finally {
+    pattern.close();
+  }
+});
+
+test("native Algorithm selectors dispatch every edit model", () => {
+  const dictionary = libdictenstein.dynamicDawg();
+  dictionary.put("ab", 1n);
+  dictionary.put("c", 2n);
+  dictionary.put("abc", 3n);
+
+  const queryWith = (algorithm, input, maximumDistance) => {
+    const transducer = liblevenshtein.transducer(dictionary, algorithm);
+    try {
+      return collect(transducer.query(input, maximumDistance));
+    } finally {
+      transducer.close();
+    }
+  };
+
+  try {
+    assert.deepEqual(queryWith("standard", "ba", 1), []);
+    assert.deepEqual(queryWith("transposition", "ba", 1), [["ab", 1, 1n]]);
+    assert.ok(
+      queryWith("merge-and-split", "ab", 1)
+        .some(([term, distance]) => term === "c" && distance === 1),
+    );
+    assert.ok(
+      queryWith("damerau-levenshtein", "ca", 2)
+        .some(([term, distance]) => term === "abc" && distance === 2),
+    );
+  } finally {
+    dictionary.close();
+  }
+});
+
+test("native QueryOrder selectors distinguish traversal from ranked output", () => {
+  const dictionary = libdictenstein.dynamicDawg();
+  dictionary.set("cats").set("cat").set("bat");
+  const transducer = liblevenshtein.transducer(dictionary);
+  try {
+    assert.deepEqual(
+      collect(transducer.query("cat", 1, "traversal")),
+      [["bat", 1, null], ["cat", 0, null], ["cats", 1, null]],
+    );
+    assert.deepEqual(
+      collect(transducer.query("cat", 1, "distance-then-term")),
+      [["cat", 0, null], ["bat", 1, null], ["cats", 1, null]],
+    );
+  } finally {
+    transducer.close();
+    dictionary.close();
+  }
+});
+
 test("every index.d.ts member exists on the native path", async () => {
   const declarations = await readFile(new URL("../index.d.ts", import.meta.url), "utf8");
   const interfaces = interfaceBodies(declarations);
