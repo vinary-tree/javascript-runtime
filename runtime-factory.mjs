@@ -176,7 +176,7 @@ class WasmEntryCursor {
   [Symbol.dispose]() { this.close(); }
 }
 
-function installDictionaryProtocol(raw) {
+function installDictionaryProtocol(raw, runtimeIdentity) {
   const prototype = raw.Dictionary.prototype;
   if (prototype.lookup) return;
   const rawPut = prototype.put;
@@ -190,6 +190,7 @@ function installDictionaryProtocol(raw) {
   const rawLookupU64 = prototype.getU64;
   const rawSnapshotEntries = prototype.snapshotEntries;
   const rawOpenEntryStream = prototype.openEntryStream;
+  const rawAlgebra = prototype.algebra;
 
   const select = (term, text, bytes, u64) => {
     if (term instanceof BigUint64Array) return u64;
@@ -256,6 +257,31 @@ function installDictionaryProtocol(raw) {
           : new MaterializedEntryCursor(this.snapshotEntries());
       },
     },
+    algebra: {
+      value(right, operation, valueMerge = "last") {
+        const result = rawAlgebra.call(
+          this,
+          requireDictionary(right, runtimeIdentity),
+          operation,
+          valueMerge,
+        );
+        return defineResourceMetadata(result, runtimeIdentity, this.unitDomain);
+      },
+    },
+    union: {
+      value(right, valueMerge = "last") { return this.algebra(right, "union", valueMerge); },
+    },
+    intersection: {
+      value(right, valueMerge = "lattice-meet") {
+        return this.algebra(right, "intersection", valueMerge);
+      },
+    },
+    difference: {
+      value(right) { return this.algebra(right, "difference"); },
+    },
+    symmetricDifference: {
+      value(right) { return this.algebra(right, "symmetric-difference"); },
+    },
     forEach: {
       value(callback, thisArg = undefined) {
         for (const [key, value] of this) callback.call(thisArg, value, key, this);
@@ -291,9 +317,9 @@ function query(transducer, input, maximumDistance, order = "traversal") {
 
 /** Build all public project namespaces over exactly one initialized runtime. */
 export function createRuntime(raw) {
-  installCursorProtocol(raw);
-  installDictionaryProtocol(raw);
   const runtimeIdentity = Object.freeze({ implementation: "vinary-tree-wasm-v1" });
+  installCursorProtocol(raw);
+  installDictionaryProtocol(raw, runtimeIdentity);
 
   Object.defineProperty(raw.Transducer, "__phoneticPatternClass", {
     value: raw.PhoneticPattern,

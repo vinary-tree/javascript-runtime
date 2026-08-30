@@ -81,6 +81,30 @@ test("WASI dictionaries expose closeable snapshot collection iterators", async (
   tokens.close();
 });
 
+test("WASI dictionary algebra delegates snapshot set operations", async () => {
+  const runtime = await createWasiRuntime({ preopens: {} });
+  const left = runtime.libdictenstein.dynamicDawg();
+  left.set("cat", 3n).set("dog", null);
+  const right = runtime.libdictenstein.dynamicDawg();
+  right.set("cat", 7n).set("eel", 11n);
+  const defaultAlgebra = left.algebra(right, "union");
+  const defaultUnion = left.union(right);
+  const union = left.union(right, "lattice-join");
+  const intersection = left.intersection(right);
+  const difference = left.difference(right);
+  const symmetric = left.symmetricDifference(right);
+  left.set("fox", 13n);
+  assert.deepEqual([...defaultAlgebra], [["cat", 7n], ["dog", null], ["eel", 11n]]);
+  assert.deepEqual([...defaultUnion], [["cat", 7n], ["dog", null], ["eel", 11n]]);
+  assert.deepEqual([...union], [["cat", 7n], ["dog", null], ["eel", 11n]]);
+  assert.deepEqual([...intersection], [["cat", 3n]]);
+  assert.deepEqual([...difference], [["dog", null]]);
+  assert.deepEqual([...symmetric], [["dog", null], ["eel", 11n]]);
+  for (const dictionary of [defaultAlgebra, defaultUnion, union, intersection, difference, symmetric, left, right]) {
+    dictionary.close();
+  }
+});
+
 test("WASI dynamic cursor survives remove, update, clear, and compact", async () => {
   const runtime = await createWasiRuntime({ preopens: {} });
   for (let trace = 0; trace < 32; trace += 1) {

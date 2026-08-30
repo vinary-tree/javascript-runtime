@@ -2,8 +2,9 @@
 
 use js_sys::{Array, BigInt, BigUint64Array, Object, Reflect, Uint8Array};
 use libdictenstein::bindings::{
-    BindingEntries, BindingEntry, BindingTerm, BindingUnitDomain, DoubleArrayTrieBinding,
-    DynamicDawgBinding, OwnedDictionaryResource, ScdawgBinding,
+    dictionary_algebra, BindingAlgebraOperation, BindingEntries, BindingEntry, BindingTerm,
+    BindingUnitDomain, BindingValueMerge, DoubleArrayTrieBinding, DynamicDawgBinding,
+    OwnedDictionaryResource, ScdawgBinding,
 };
 use liblevenshtein::bindings::{
     Match, MatchBatch, MatchTerm, PhoneticPattern, PhoneticRuleSet, QueryCursor, QueryOrder,
@@ -57,6 +58,30 @@ fn domain(value: &str) -> Result<BindingUnitDomain, JsValue> {
         "unicode" => Ok(BindingUnitDomain::UnicodeScalar),
         "u64" => Ok(BindingUnitDomain::U64),
         _ => Err(error(format!("unknown unit domain {value}"))),
+    }
+}
+
+fn algebra_operation(value: &str) -> Result<BindingAlgebraOperation, JsValue> {
+    match value {
+        "union" => Ok(BindingAlgebraOperation::Union),
+        "intersection" => Ok(BindingAlgebraOperation::Intersection),
+        "difference" => Ok(BindingAlgebraOperation::Difference),
+        "symmetric-difference" => Ok(BindingAlgebraOperation::SymmetricDifference),
+        _ => Err(error(format!(
+            "unknown dictionary algebra operation {value}"
+        ))),
+    }
+}
+
+fn value_merge(value: &str) -> Result<BindingValueMerge, JsValue> {
+    match value {
+        "first" => Ok(BindingValueMerge::First),
+        "last" => Ok(BindingValueMerge::Last),
+        "lattice-join" => Ok(BindingValueMerge::LatticeJoin),
+        "lattice-meet" => Ok(BindingValueMerge::LatticeMeet),
+        _ => Err(error(format!(
+            "unknown dictionary value-merge policy {value}"
+        ))),
     }
 }
 
@@ -462,6 +487,25 @@ impl JsDictionary {
         Ok(JsDictionaryEntryCursor {
             entries: Some(entries),
             size,
+        })
+    }
+
+    /// Materialize a snapshot-consistent exact-key set operation.
+    pub fn algebra(
+        &self,
+        right: &JsDictionary,
+        operation: &str,
+        value_merge_policy: &str,
+    ) -> Result<JsDictionary, JsValue> {
+        let result = dictionary_algebra(
+            &self.backend()?.resource(),
+            &right.backend()?.resource(),
+            algebra_operation(operation)?,
+            value_merge(value_merge_policy)?,
+        )
+        .map_err(error)?;
+        Ok(Self {
+            backend: Some(DictionaryBackend::Dynamic(result)),
         })
     }
 

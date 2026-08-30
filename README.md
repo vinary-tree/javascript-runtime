@@ -52,6 +52,30 @@ loop exit leaks no native cursor. Large traversals use `streamEntries()`, a
 bounded iterator with `nextBatch`, `reduceBatches`, `return`, `close`, and
 `Symbol.dispose`.
 
+## Snapshot algebra without JavaScript rebuilds
+
+Union, intersection, left difference, and symmetric difference run inside the
+shared native/WASM/WASI engine. Each call captures one immutable revision from
+each same-domain input, linearly merges their ordered entries, and returns an
+independently mutable DynamicDAWG. Duplicate values can keep the first or last
+value or use the optional-`u64` lattice join or meet; union defaults to the last
+value and intersection to lattice meet.
+
+```js
+using left = libdictenstein.dynamicDawg();
+using right = libdictenstein.dynamicDawg();
+left.set("shared", 4n);
+right.set("shared", 9n);
+
+using joined = left.union(right, "lattice-join");
+using common = left.intersection(right);
+console.log(joined.get("shared"), common.get("shared")); // 9n, 4n
+```
+
+The merge takes $`\Theta(|A|+|B|)`$ time and $`\Theta(|R|)`$ result storage. It
+does not materialize a JavaScript `Map`, cross the host boundary per entry, or
+publish a mutable graph once per key.
+
 The same ownership rule applies to query cursors, phonetic patterns, rule sets,
 builders, transducers, and WFSTs: prefer `using` or call `close()` in `finally`.
 Garbage collection is exceptional-path containment, not resource scheduling.

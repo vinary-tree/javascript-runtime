@@ -7,6 +7,8 @@ export type QueryOrder = "traversal" | "distance-then-term";
 export type DictionaryValue = bigint | null;
 export type DictionaryKey = string | Uint8Array | BigUint64Array;
 export type DictionaryEntry = readonly [DictionaryKey, DictionaryValue];
+export type AlgebraOperation = "union" | "intersection" | "difference" | "symmetric-difference";
+export type ValueMerge = "first" | "last" | "lattice-join" | "lattice-meet";
 export interface Lookup { readonly found: boolean; readonly value: DictionaryValue; }
 export type Term =
   | { readonly domain: "unicode"; readonly value: string }
@@ -45,6 +47,11 @@ export interface Dictionary extends DictionaryResource, Iterable<DictionaryEntry
   keys(): IterableIterator<DictionaryKey>;
   values(): IterableIterator<DictionaryValue>;
   streamEntries(): DictionaryEntryCursor;
+  algebra(right: Dictionary, operation: AlgebraOperation, valueMerge?: ValueMerge): Dictionary;
+  union(right: Dictionary, valueMerge?: ValueMerge): Dictionary;
+  intersection(right: Dictionary, valueMerge?: ValueMerge): Dictionary;
+  difference(right: Dictionary): Dictionary;
+  symmetricDifference(right: Dictionary): Dictionary;
   forEach(callback: (value: DictionaryValue, key: DictionaryKey, dictionary: Dictionary) => void, thisArg?: unknown): void;
   toMap(): Map<string, DictionaryValue>;
   clear(): void;

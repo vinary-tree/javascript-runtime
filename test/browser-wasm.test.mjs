@@ -131,6 +131,29 @@ test("browser dictionaries expose host-owned Map collection snapshots", () => {
   tokens.close();
 });
 
+test("browser dictionary algebra delegates snapshot set operations", () => {
+  const left = libdictenstein.dynamicDawg();
+  left.set("cat", 3n).set("dog", null);
+  const right = libdictenstein.dynamicDawg();
+  right.set("cat", 7n).set("eel", 11n);
+  const defaultAlgebra = left.algebra(right, "union");
+  const defaultUnion = left.union(right);
+  const union = left.union(right, "lattice-join");
+  const intersection = left.intersection(right);
+  const difference = left.difference(right);
+  const symmetric = left.symmetricDifference(right);
+  left.set("fox", 13n);
+  assert.deepEqual([...defaultAlgebra], [["cat", 7n], ["dog", null], ["eel", 11n]]);
+  assert.deepEqual([...defaultUnion], [["cat", 7n], ["dog", null], ["eel", 11n]]);
+  assert.deepEqual([...union], [["cat", 7n], ["dog", null], ["eel", 11n]]);
+  assert.deepEqual([...intersection], [["cat", 3n]]);
+  assert.deepEqual([...difference], [["dog", null]]);
+  assert.deepEqual([...symmetric], [["dog", null], ["eel", 11n]]);
+  for (const dictionary of [defaultAlgebra, defaultUnion, union, intersection, difference, symmetric, left, right]) {
+    dictionary.close();
+  }
+});
+
 test("duallity WFST composes lazily with a lling-llang VectorWfst", () => {
   const dictionary = libdictenstein.dynamicDawg();
   dictionary.put("cat", 1n);

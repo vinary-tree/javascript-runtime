@@ -136,6 +136,8 @@ try {
 | `DictionaryValue` | `bigint | null`. `null` is a present key with no identifier. |
 | `DictionaryKey` | `string | Uint8Array | BigUint64Array`; the value must match the dictionary unit domain. |
 | `DictionaryEntry` | Frozen pair `readonly [DictionaryKey, DictionaryValue]`. |
+| `AlgebraOperation` | `"union" | "intersection" | "difference" | "symmetric-difference"`. |
+| `ValueMerge` | `"first" | "last" | "lattice-join" | "lattice-meet"` for overlapping optional values. |
 | `Lookup` | `{ found: boolean, value: DictionaryValue }`; inspect `found` to distinguish absence from a present `null`. |
 | `Term` | Tagged union carrying `{ domain, value }` for Unicode, byte, or `u64` query output. |
 | `Match` | `{ term: Term, distance: number, id: bigint | null }`. |
@@ -191,6 +193,11 @@ carry.
 | `Dictionary.entries()` / `Dictionary.keys()` / `Dictionary.values()` | Host-owned snapshot iterators; early loop exit owns no native cursor. |
 | `Dictionary[Symbol.iterator]()` | Same as `entries()`. |
 | `Dictionary.streamEntries()` | Closeable bounded `DictionaryEntryCursor` for large results. |
+| `Dictionary.algebra(right, operation, valueMerge?)` | Capture one revision of each same-domain input and materialize the selected native set operation as an independent mutable DynamicDAWG. |
+| `Dictionary.union(right, valueMerge?)` | Materialized union; shared values default to `"last"`. |
+| `Dictionary.intersection(right, valueMerge?)` | Materialized intersection; shared values default to `"lattice-meet"`. |
+| `Dictionary.difference(right)` | Materialize keys present only in the receiver. |
+| `Dictionary.symmetricDifference(right)` | Materialize keys present in exactly one input. |
 | `Dictionary.forEach(callback, thisArg?)` | Map-compatible callback order `(value, key, dictionary)`. |
 | `Dictionary.toMap()` | Copy a Unicode dictionary into a standard `Map`; byte and `u64` keys are rejected because JavaScript typed arrays use reference identity. |
 | `Dictionary.clear()` | Publish an empty revision. |
@@ -441,6 +448,9 @@ results.
   or decrease it to reduce peak host memory for large terms.
 - `entries`, `keys`, `values`, and `snapshotEntries` materialize the full output
   in host memory. Use `streamEntries` for large dictionaries.
+- Dictionary algebra merges two captured lexicographic streams in
+  $`\Theta(|A|+|B|)`$ time, bulk-builds the mutable result once, and avoids a
+  JavaScript `Map` or per-entry host calls.
 - `QueryCursor.next()` internally amortizes traversal through native batching;
   `nextBatch` and `reduceBatches` make the batching explicit.
 - Same-runtime dictionaries and WFSTs cross project boundaries as retained
