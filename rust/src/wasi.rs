@@ -1,8 +1,8 @@
 //! Compact linear-memory ABI used by the Node WASI facade.
 
 use libdictenstein::bindings::{
-    BindingEntries, BindingTerm, BindingUnitDomain, DynamicDawgBinding, OwnedDictionaryResource,
-    PersistentARTrieBinding,
+    dictionary_algebra, BindingAlgebraOperation, BindingEntries, BindingTerm, BindingUnitDomain,
+    BindingValueMerge, DynamicDawgBinding, OwnedDictionaryResource, PersistentARTrieBinding,
 };
 use liblevenshtein::bindings::{
     MatchBatch, MatchTerm, QueryCursor, QueryOrder, ResourceTransducer,
@@ -198,6 +198,26 @@ fn selected_algorithm(value: u32) -> Result<Algorithm, &'static str> {
     }
 }
 
+fn selected_algebra_operation(value: u32) -> Result<BindingAlgebraOperation, &'static str> {
+    match value {
+        1 => Ok(BindingAlgebraOperation::Union),
+        2 => Ok(BindingAlgebraOperation::Intersection),
+        3 => Ok(BindingAlgebraOperation::Difference),
+        4 => Ok(BindingAlgebraOperation::SymmetricDifference),
+        _ => Err("unknown dictionary algebra operation"),
+    }
+}
+
+fn selected_value_merge(value: u32) -> Result<BindingValueMerge, &'static str> {
+    match value {
+        1 => Ok(BindingValueMerge::First),
+        2 => Ok(BindingValueMerge::Last),
+        3 => Ok(BindingValueMerge::LatticeJoin),
+        4 => Ok(BindingValueMerge::LatticeMeet),
+        _ => Err("unknown dictionary value-merge policy"),
+    }
+}
+
 fn selected_duallity_kind(value: u32) -> Result<duallity::bindings::WfstKind, &'static str> {
     use duallity::bindings::WfstKind;
     match value {
@@ -353,6 +373,36 @@ pub extern "C" fn vt_dictionary_len(handle: u32) -> u32 {
     match registry.handles.get(&handle) {
         Some(Handle::Dictionary(dictionary)) => dictionary.len() as u32,
         _ => registry.fail("invalid dictionary handle"),
+    }
+}
+
+/// Materialize a snapshot-consistent exact-key set operation.
+#[no_mangle]
+pub extern "C" fn vt_dictionary_algebra(
+    left_handle: u32,
+    right_handle: u32,
+    operation: u32,
+    value_merge: u32,
+) -> u32 {
+    let result = (|| {
+        let operation = selected_algebra_operation(operation)?;
+        let value_merge = selected_value_merge(value_merge)?;
+        let (left, right) = {
+            let registry = locked_registry();
+            let Some(Handle::Dictionary(left)) = registry.handles.get(&left_handle) else {
+                return Err("invalid left dictionary handle".to_owned());
+            };
+            let Some(Handle::Dictionary(right)) = registry.handles.get(&right_handle) else {
+                return Err("invalid right dictionary handle".to_owned());
+            };
+            (left.resource(), right.resource())
+        };
+        dictionary_algebra(&left, &right, operation, value_merge).map_err(|error| error.to_string())
+    })();
+    let mut registry = locked_registry();
+    match result {
+        Ok(dictionary) => registry.insert(Handle::Dictionary(Dictionary::Dynamic(dictionary))),
+        Err(error) => registry.fail(error),
     }
 }
 

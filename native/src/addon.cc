@@ -346,6 +346,26 @@ napi_value dictionary_len(napi_env env, napi_callback_info info) {
   return status == LDICT_STATUS_OK ? number(env, static_cast<double>(length)) : ldict_error(env, status);
 }
 
+napi_value dictionary_algebra(napi_env env, napi_callback_info info) {
+  const auto args = arguments(env, info, 4);
+  auto* left = args.size() == 4 ? external<DictionaryHandle>(env, args[0]) : nullptr;
+  auto* right = args.size() == 4 ? external<DictionaryHandle>(env, args[1]) : nullptr;
+  uint32_t operation = 0;
+  uint32_t value_merge = 0;
+  if (!left || !right || !left->value || !right->value ||
+      !uint32(env, args[2], &operation) || !uint32(env, args[3], &value_merge)) {
+    if (!left || !right) return nullptr;
+    if (!left->value || !right->value) return ldict_error(env, LDICT_STATUS_CLOSED);
+    napi_throw_type_error(env, nullptr,
+                          "dictionaryAlgebra requires two dictionaries and numeric policies");
+    return nullptr;
+  }
+  LdictDictionary* result = nullptr;
+  const auto status = ldict_dictionary_algebra(
+      left->value, right->value, operation, value_merge, &result);
+  return status == LDICT_STATUS_OK ? dictionary_external(env, result) : ldict_error(env, status);
+}
+
 napi_value dictionary_entries_open(napi_env env, napi_callback_info info) {
   const auto args = arguments(env, info, 1);
   auto* dictionary = args.size() == 1
@@ -1252,6 +1272,7 @@ napi_value initialize(napi_env env, napi_value exports) {
     {"persistentARTrieOpen", nullptr, persistent_open, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"dictionaryClose", nullptr, dictionary_close, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"dictionaryLen", nullptr, dictionary_len, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"dictionaryAlgebra", nullptr, dictionary_algebra, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"dictionaryEntriesOpen", nullptr, dictionary_entries_open, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"dictionaryEntryCursorNextBatch", nullptr, dictionary_entry_cursor_next_batch, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"dictionaryEntryCursorClose", nullptr, dictionary_entry_cursor_close, nullptr, nullptr, nullptr, napi_default, nullptr},

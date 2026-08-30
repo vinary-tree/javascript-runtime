@@ -8,6 +8,12 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 
 const DOMAINS = new Map([["byte", 0], ["unicode", 1], ["u64", 2]]);
+const ALGEBRA_OPERATIONS = new Map([
+  ["union", 1], ["intersection", 2], ["difference", 3], ["symmetric-difference", 4],
+]);
+const VALUE_MERGES = new Map([
+  ["first", 1], ["last", 2], ["lattice-join", 3], ["lattice-meet", 4],
+]);
 const ALGORITHMS = new Map([
   ["standard", 0],
   ["transposition", 1],
@@ -146,6 +152,27 @@ export async function createWasiRuntime({
     has(term) { return this.lookup(term).found; }
     hasU64(term) { return this.has(term); }
     streamEntries() { return new DictionaryEntryCursor(ffi.vt_dictionary_entries_open(this._handle)); }
+    algebra(right, operation, valueMerge = "last") {
+      if (!(right instanceof Dictionary)) {
+        throw new TypeError("dictionary algebra requires a dictionary from this runtime");
+      }
+      return new Dictionary(
+        ffi.vt_dictionary_algebra(
+          this._handle,
+          right._handle,
+          select(ALGEBRA_OPERATIONS, operation, "dictionary algebra operation"),
+          select(VALUE_MERGES, valueMerge, "dictionary value-merge policy"),
+        ),
+        this.unitDomain,
+        false,
+      );
+    }
+    union(right, valueMerge = "last") { return this.algebra(right, "union", valueMerge); }
+    intersection(right, valueMerge = "lattice-meet") {
+      return this.algebra(right, "intersection", valueMerge);
+    }
+    difference(right) { return this.algebra(right, "difference"); }
+    symmetricDifference(right) { return this.algebra(right, "symmetric-difference"); }
     snapshotEntries() {
       const result = [];
       const cursor = this.streamEntries();

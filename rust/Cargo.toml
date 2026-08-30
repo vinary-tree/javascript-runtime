@@ -25,3 +25,9 @@ console_error_panic_hook = "0.1"
 default = ["browser"]
 browser = []
 wasi = ["libdictenstein/persistent-artrie", "liblevenshtein/serialization"]
+
+# Keep this package self-contained when the JavaScript repository is checked
+# out beneath an unrelated Cargo workspace (for example, a release staging
+# tree). The runtime owns its Rust build and lockfile independently.
+[workspace]
+resolver = "2"

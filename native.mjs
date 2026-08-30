@@ -27,6 +27,12 @@ try {
 }
 const runtimeIdentity = Object.freeze({ implementation: "vinary-tree-node-napi-v1" });
 const domains = new Map([["byte", 1], ["unicode", 2], ["u64", 3]]);
+const algebraOperations = new Map([
+  ["union", 1], ["intersection", 2], ["difference", 3], ["symmetric-difference", 4],
+]);
+const valueMerges = new Map([
+  ["first", 1], ["last", 2], ["lattice-join", 3], ["lattice-meet", 4],
+]);
 const algorithms = new Map([
   ["standard", 0], ["transposition", 1], ["merge-and-split", 2], ["damerau-levenshtein", 3],
 ]);
@@ -163,6 +169,24 @@ class Dictionary {
   has(term) { return this.lookup(term).found; }
   hasU64(term) { return this.lookupU64(term).found; }
   streamEntries() { return new DictionaryEntryCursor(ffi.dictionaryEntriesOpen(this._handle)); }
+  algebra(right, operation, valueMerge = "last") {
+    if (!(right instanceof Dictionary)) {
+      throw new TypeError("dictionary algebra requires a dictionary from this runtime");
+    }
+    const handle = ffi.dictionaryAlgebra(
+      this._handle,
+      right._handle,
+      select(algebraOperations, operation, "dictionary algebra operation"),
+      select(valueMerges, valueMerge, "dictionary value-merge policy"),
+    );
+    return new Dictionary(handle, this.unitDomain, "dynamic-dawg");
+  }
+  union(right, valueMerge = "last") { return this.algebra(right, "union", valueMerge); }
+  intersection(right, valueMerge = "lattice-meet") {
+    return this.algebra(right, "intersection", valueMerge);
+  }
+  difference(right) { return this.algebra(right, "difference"); }
+  symmetricDifference(right) { return this.algebra(right, "symmetric-difference"); }
   snapshotEntries() {
     const result = [];
     const cursor = this.streamEntries();
