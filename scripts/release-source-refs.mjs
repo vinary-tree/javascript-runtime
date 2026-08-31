@@ -128,4 +128,4 @@ function main() {
   }
 }
 
-if (fileURLToPath(import.meta.url) === resolve(process.argv[1])) main();
+if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === resolve(process.argv[1])) main();

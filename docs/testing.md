@@ -35,6 +35,17 @@ printed by `npm run configure:local`. The generated `.cargo/config.toml`, SDK,
 Cargo outputs, WASM outputs, and prebuilds are ignored and must never be
 committed.
 
+On a family feature branch, CI probes each authoritative component repository
+for a branch with the same name. It checks out that branch when it exists and
+uses the component's stable development baseline otherwise (`master`, or the
+pinned `llattice` release). This per-component resolution lets one integration
+branch exercise coordinated ABI changes without making an unrelated repository
+invent a placeholder branch. A `release/*` train remains strict: every mutable
+family component must provide the coordinated release branch, while `llattice`
+stays on its immutable pinned release. Release workflows never use this
+development resolver; they consume only the immutable tags in
+`release/version.json`.
+
 ## Property-test model
 
 The native property suite compares optimized functions against small direct
