@@ -296,6 +296,10 @@ class Transducer {
     }
     this.#handle = ffi.transducerNew(dictionary._handle, select(algorithms, algorithm, "algorithm"));
   }
+  get _handle() {
+    if (this.#handle === null) throw new Error("transducer is closed");
+    return this.#handle;
+  }
   query(input, maximumDistance, order = "traversal") {
     if (input instanceof PhoneticPattern) {
       return new QueryCursor(ffi.queryPattern(this.#handle, input._handle, maximumDistance));
@@ -318,6 +322,51 @@ class Transducer {
       this.#handle = null;
     }
   }
+}
+
+class QueryCache {
+  #handle;
+  constructor(transducer, maximumEntries, maximumWeight) {
+    if (!(transducer instanceof Transducer)) {
+      throw new TypeError("query cache requires a transducer from this runtime");
+    }
+    this.#handle = ffi.queryCacheNew(
+      transducer._handle, maximumEntries, maximumWeight,
+    );
+  }
+  get _handle() {
+    if (this.#handle === null) throw new Error("query cache is closed");
+    return this.#handle;
+  }
+  get stats() { return Object.freeze(ffi.queryCacheStats(this._handle)); }
+  query(input, maximumDistance, order = "traversal") {
+    const selectedOrder = select(orders, order, "query order");
+    if (typeof input === "string") {
+      return new QueryCursor(ffi.cachedQueryText(
+        this._handle, input, maximumDistance, selectedOrder,
+      ));
+    }
+    if (input instanceof BigUint64Array) {
+      return new QueryCursor(ffi.cachedQueryU64(
+        this._handle, input, maximumDistance, selectedOrder,
+      ));
+    }
+    if (input instanceof Uint8Array) {
+      return new QueryCursor(ffi.cachedQueryBytes(
+        this._handle, input, maximumDistance, selectedOrder,
+      ));
+    }
+    throw new TypeError("cached query requires text, Uint8Array, or BigUint64Array");
+  }
+  clear() { ffi.queryCacheClear(this._handle); return this; }
+  resetStats() { ffi.queryCacheResetStats(this._handle); return this; }
+  close() {
+    if (this.#handle !== null) {
+      ffi.queryCacheClose(this.#handle);
+      this.#handle = null;
+    }
+  }
+  [Symbol.dispose]() { this.close(); }
 }
 
 class Wfst {
@@ -403,6 +452,13 @@ const libdictenstein = Object.freeze({
 const liblevenshtein = Object.freeze({
   runtimeIdentity,
   transducer(dictionary, algorithm = "standard") { return new Transducer(dictionary, algorithm); },
+  queryCache(transducer, { maximumEntries = 1024, maximumWeight = 64 * 1024 * 1024 } = {}) {
+    if (!Number.isSafeInteger(maximumEntries) || maximumEntries < 0 ||
+        !Number.isSafeInteger(maximumWeight) || maximumWeight < 0) {
+      throw new RangeError("query-cache limits must be nonnegative safe integers");
+    }
+    return new QueryCache(transducer, maximumEntries, maximumWeight);
+  },
   phoneticPattern(source) { return new PhoneticPattern(ffi.patternCompileRegex(source)); },
   llrePattern(source) { return new PhoneticPattern(ffi.patternCompileLlre(source)); },
   phoneticRules(source) { return new PhoneticRuleSet(ffi.rulesCompile(source)); },

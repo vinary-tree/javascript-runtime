@@ -1,6 +1,7 @@
 import type { RuntimeIdentity, UnitDomain } from "@vinary-tree/vinary-tree-interop";
 import type {
-  Dictionary, QueryCursor, Algorithm, LlingLlangNamespace, DuallityNamespace,
+  Dictionary, Transducer, QueryCache, QueryCacheOptions, Algorithm,
+  LlingLlangNamespace, DuallityNamespace,
 } from "./index.js";
 
 export interface PersistentDictionary extends Dictionary { checkpoint(): void; }
@@ -14,10 +15,8 @@ export interface WasiRuntime {
   };
   readonly liblevenshtein: {
     readonly runtimeIdentity: RuntimeIdentity;
-    transducer(dictionary: Dictionary, algorithm?: Algorithm): {
-      query(query: string, maximumDistance: number, order?: "traversal" | "distance-then-term"): QueryCursor;
-      close(): void;
-    };
+    transducer(dictionary: Dictionary, algorithm?: Algorithm): Transducer;
+    queryCache(transducer: Transducer, options?: QueryCacheOptions): QueryCache;
   };
   readonly llingLlang: LlingLlangNamespace;
   readonly duallity: DuallityNamespace;

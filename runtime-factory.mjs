@@ -304,15 +304,26 @@ function query(transducer, input, maximumDistance, order = "traversal") {
     return transducer.queryText(input, maximumDistance, order);
   }
   if (input instanceof Uint8Array && !(input instanceof BigUint64Array)) {
-    return transducer.queryBytes(input, maximumDistance);
+    return transducer.queryBytes(input, maximumDistance, order);
   }
   if (input instanceof BigUint64Array) {
-    return transducer.queryU64(input, maximumDistance);
+    return transducer.queryU64(input, maximumDistance, order);
   }
   if (input instanceof transducer.constructor.__phoneticPatternClass) {
     return transducer.queryPattern(input, maximumDistance);
   }
   throw new TypeError("query must be a string, Uint8Array, BigUint64Array, or PhoneticPattern");
+}
+
+function cachedQuery(cache, input, maximumDistance, order = "traversal") {
+  if (typeof input === "string") return cache.queryText(input, maximumDistance, order);
+  if (input instanceof Uint8Array && !(input instanceof BigUint64Array)) {
+    return cache.queryBytes(input, maximumDistance, order);
+  }
+  if (input instanceof BigUint64Array) {
+    return cache.queryU64(input, maximumDistance, order);
+  }
+  throw new TypeError("cached query must be a string, Uint8Array, or BigUint64Array");
 }
 
 /** Build all public project namespaces over exactly one initialized runtime. */
@@ -329,6 +340,20 @@ export function createRuntime(raw) {
       value(input, maximumDistance, order) {
         return query(this, input, maximumDistance, order);
       },
+    });
+  }
+  if (raw.QueryCache && !raw.QueryCache.prototype.query) {
+    const readStats = raw.QueryCache.prototype.stats;
+    Object.defineProperties(raw.QueryCache.prototype, {
+      stats: {
+        get() { return Object.freeze(readStats.call(this)); },
+      },
+      query: {
+        value(input, maximumDistance, order) {
+          return cachedQuery(this, input, maximumDistance, order);
+        },
+      },
+      [Symbol.dispose]: { value() { this.close(); } },
     });
   }
 
@@ -358,6 +383,19 @@ export function createRuntime(raw) {
     runtimeIdentity,
     transducer(dictionary, algorithm = "standard") {
       return new raw.Transducer(requireDictionary(dictionary, runtimeIdentity), algorithm);
+    },
+    queryCache(transducer, {
+      maximumEntries = 1024,
+      maximumWeight = 64 * 1024 * 1024,
+    } = {}) {
+      if (!(transducer instanceof raw.Transducer)) {
+        throw new TypeError("query cache requires a transducer from this runtime");
+      }
+      if (!Number.isSafeInteger(maximumEntries) || maximumEntries < 0 ||
+          !Number.isSafeInteger(maximumWeight) || maximumWeight < 0) {
+        throw new RangeError("query-cache limits must be nonnegative safe integers");
+      }
+      return new raw.QueryCache(transducer, maximumEntries, maximumWeight);
     },
     phoneticPattern(source) {
       return raw.PhoneticPattern.compileRegex(source);

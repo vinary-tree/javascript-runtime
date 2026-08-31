@@ -20,6 +20,7 @@ struct DictionaryEntryCursorHandle {
   uint32_t unit_domain;
 };
 struct TransducerHandle { LlevTransducer* value; };
+struct QueryCacheHandle { LlevQueryCache* value; };
 struct CursorHandle { LlevQueryCursor* value; };
 struct PatternHandle { LlevPhoneticPattern* value; };
 struct RulesHandle { LlevPhoneticRuleSet* value; };
@@ -156,6 +157,11 @@ void dictionary_entry_cursor_finalize(napi_env, void* data, void*) {
 void transducer_finalize(napi_env, void* data, void*) {
   auto* handle = static_cast<TransducerHandle*>(data);
   if (handle->value) llev_transducer_free(handle->value);
+  delete handle;
+}
+void query_cache_finalize(napi_env, void* data, void*) {
+  auto* handle = static_cast<QueryCacheHandle*>(data);
+  if (handle->value) llev_query_cache_free(handle->value);
   delete handle;
 }
 void cursor_finalize(napi_env, void* data, void*) {
@@ -762,6 +768,112 @@ napi_value query_typed(napi_env env, napi_callback_info info, bool u64) {
 napi_value query_bytes(napi_env env, napi_callback_info info) { return query_typed(env, info, false); }
 napi_value query_u64(napi_env env, napi_callback_info info) { return query_typed(env, info, true); }
 
+napi_value query_cache_new(napi_env env, napi_callback_info info) {
+  const auto args = arguments(env, info, 3);
+  auto* transducer = args.size() == 3 ? external<TransducerHandle>(env, args[0]) : nullptr;
+  size_t maximum_entries = 0;
+  size_t maximum_weight = 0;
+  if (!transducer || !transducer->value ||
+      !size_value(env, args[1], &maximum_entries) ||
+      !size_value(env, args[2], &maximum_weight)) return nullptr;
+  LlevQueryCache* cache = nullptr;
+  const auto status = llev_query_cache_new(
+      transducer->value, maximum_entries, maximum_weight, &cache);
+  if (status != LLEV_STATUS_OK) return llev_error(env, status);
+  napi_value result;
+  auto* handle = new QueryCacheHandle{cache};
+  const auto napi_status =
+      napi_create_external(env, handle, query_cache_finalize, nullptr, &result);
+  if (napi_status != napi_ok) {
+    query_cache_finalize(env, handle, nullptr);
+    return fail_napi(env, "napi_create_external", napi_status);
+  }
+  return result;
+}
+
+napi_value query_cache_close(napi_env env, napi_callback_info info) {
+  const auto args = arguments(env, info, 1);
+  auto* handle = args.size() == 1 ? external<QueryCacheHandle>(env, args[0]) : nullptr;
+  if (!handle) return nullptr;
+  if (handle->value) llev_query_cache_free(std::exchange(handle->value, nullptr));
+  return undefined(env);
+}
+
+napi_value query_cache_stats(napi_env env, napi_callback_info info) {
+  const auto args = arguments(env, info, 1);
+  auto* handle = args.size() == 1 ? external<QueryCacheHandle>(env, args[0]) : nullptr;
+  if (!handle || !handle->value) return nullptr;
+  LlevQueryCacheStats stats{};
+  const auto status = llev_query_cache_stats(handle->value, &stats);
+  if (status != LLEV_STATUS_OK) return llev_error(env, status);
+  napi_value output;
+  napi_create_object(env, &output);
+  property(env, output, "requests", bigint(env, stats.requests));
+  property(env, output, "hits", bigint(env, stats.hits));
+  property(env, output, "misses", bigint(env, stats.misses));
+  property(env, output, "admissions", bigint(env, stats.admissions));
+  property(env, output, "rejections", bigint(env, stats.rejections));
+  property(env, output, "evictions", bigint(env, stats.evictions));
+  property(env, output, "residentEntries", number(env, static_cast<double>(stats.resident_entries)));
+  property(env, output, "residentWeight", number(env, static_cast<double>(stats.resident_weight)));
+  return output;
+}
+
+napi_value query_cache_clear(napi_env env, napi_callback_info info) {
+  const auto args = arguments(env, info, 1);
+  auto* handle = args.size() == 1 ? external<QueryCacheHandle>(env, args[0]) : nullptr;
+  if (!handle || !handle->value) return nullptr;
+  const auto status = llev_query_cache_clear(handle->value);
+  return status == LLEV_STATUS_OK ? undefined(env) : llev_error(env, status);
+}
+
+napi_value query_cache_reset_stats(napi_env env, napi_callback_info info) {
+  const auto args = arguments(env, info, 1);
+  auto* handle = args.size() == 1 ? external<QueryCacheHandle>(env, args[0]) : nullptr;
+  if (!handle || !handle->value) return nullptr;
+  const auto status = llev_query_cache_reset_stats(handle->value);
+  return status == LLEV_STATUS_OK ? undefined(env) : llev_error(env, status);
+}
+
+napi_value cached_query_text(napi_env env, napi_callback_info info) {
+  const auto args = arguments(env, info, 4);
+  auto* handle = args.size() == 4 ? external<QueryCacheHandle>(env, args[0]) : nullptr;
+  std::string query;
+  size_t maximum = 0;
+  uint32_t order = 0;
+  if (!handle || !handle->value || !string(env, args[1], &query) ||
+      !size_value(env, args[2], &maximum) || !uint32(env, args[3], &order)) return nullptr;
+  LlevQueryCursor* cursor = nullptr;
+  const auto status = llev_query_cache_query_utf8(
+      handle->value, query.data(), query.size(), maximum, order, &cursor);
+  return status == LLEV_STATUS_OK ? cursor_external(env, cursor) : llev_error(env, status);
+}
+
+napi_value cached_query_typed(napi_env env, napi_callback_info info, bool u64) {
+  const auto args = arguments(env, info, 4);
+  auto* handle = args.size() == 4 ? external<QueryCacheHandle>(env, args[0]) : nullptr;
+  void* data = nullptr;
+  size_t length = 0;
+  size_t maximum = 0;
+  uint32_t order = 0;
+  const auto type = u64 ? napi_biguint64_array : napi_uint8_array;
+  if (!handle || !handle->value || !typed_array(env, args[1], type, &data, &length) ||
+      !size_value(env, args[2], &maximum) || !uint32(env, args[3], &order)) return nullptr;
+  LlevQueryCursor* cursor = nullptr;
+  const auto status = u64
+      ? llev_query_cache_query_u64(handle->value, static_cast<const uint64_t*>(data),
+                                   length, maximum, order, &cursor)
+      : llev_query_cache_query_bytes(handle->value, static_cast<const uint8_t*>(data),
+                                     length, maximum, order, &cursor);
+  return status == LLEV_STATUS_OK ? cursor_external(env, cursor) : llev_error(env, status);
+}
+napi_value cached_query_bytes(napi_env env, napi_callback_info info) {
+  return cached_query_typed(env, info, false);
+}
+napi_value cached_query_u64(napi_env env, napi_callback_info info) {
+  return cached_query_typed(env, info, true);
+}
+
 napi_value cursor_close(napi_env env, napi_callback_info info) {
   const auto args = arguments(env, info, 1);
   auto* handle = args.size() == 1 ? external<CursorHandle>(env, args[0]) : nullptr;
@@ -1295,6 +1407,14 @@ napi_value initialize(napi_env env, napi_value exports) {
     {"queryText", nullptr, query_text, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"queryBytes", nullptr, query_bytes, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"queryU64", nullptr, query_u64, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"queryCacheNew", nullptr, query_cache_new, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"queryCacheClose", nullptr, query_cache_close, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"queryCacheStats", nullptr, query_cache_stats, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"queryCacheClear", nullptr, query_cache_clear, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"queryCacheResetStats", nullptr, query_cache_reset_stats, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"cachedQueryText", nullptr, cached_query_text, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"cachedQueryBytes", nullptr, cached_query_bytes, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"cachedQueryU64", nullptr, cached_query_u64, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"cursorNextBatch", nullptr, cursor_next_batch, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"cursorClose", nullptr, cursor_close, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"patternCompileRegex", nullptr, pattern_compile_regex, nullptr, nullptr, nullptr, napi_default, nullptr},

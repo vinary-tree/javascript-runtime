@@ -80,6 +80,12 @@ export async function createWasiRuntime({
     if (selected === undefined) throw new TypeError(`unknown ${kind}: ${value}`);
     return selected;
   }
+  function unsigned32(value, kind) {
+    if (!Number.isSafeInteger(value) || value < 0 || value > 0xffff_ffff) {
+      throw new RangeError(`${kind} must be an unsigned 32-bit integer`);
+    }
+    return value;
+  }
 
   class Dictionary {
     #handle;
@@ -410,14 +416,24 @@ export async function createWasiRuntime({
         select(ALGORITHMS, algorithm, "algorithm"),
       ));
     }
+    get _handle() {
+      if (this.#handle === 0) throw new Error("transducer is closed");
+      return this.#handle;
+    }
     query(query, maximumDistance, order = "traversal") {
-      if (typeof query !== "string") throw new TypeError("this WASI query entry point requires text");
-      return withBytes(query, (pointer, length) => new QueryCursor(ffi.vt_query_text(
-        this.#handle,
-        pointer,
-        length,
-        maximumDistance,
-        select(ORDERS, order, "query order"),
+      const distance = unsigned32(maximumDistance, "maximum distance");
+      const selectedOrder = select(ORDERS, order, "query order");
+      if (query instanceof BigUint64Array) {
+        return withTokens(query, (pointer, length) => new QueryCursor(ffi.vt_query_u64(
+          this._handle, pointer, length, distance, selectedOrder,
+        )));
+      }
+      if (typeof query !== "string" && !(query instanceof Uint8Array)) {
+        throw new TypeError("query requires text, Uint8Array, or BigUint64Array");
+      }
+      const operation = typeof query === "string" ? ffi.vt_query_text : ffi.vt_query_bytes;
+      return withBytes(query, (pointer, length) => new QueryCursor(operation(
+        this._handle, pointer, length, distance, selectedOrder,
       )));
     }
     close() {
@@ -426,6 +442,71 @@ export async function createWasiRuntime({
         this.#handle = 0;
       }
     }
+    [Symbol.dispose]() { this.close(); }
+  }
+
+  class QueryCache {
+    #handle;
+    constructor(transducer, maximumEntries, maximumWeight) {
+      if (!(transducer instanceof Transducer)) {
+        throw new TypeError("query cache requires a transducer from this runtime");
+      }
+      this.#handle = failure(ffi.vt_query_cache_new(
+        transducer._handle,
+        unsigned32(maximumEntries, "maximum cache entries"),
+        unsigned32(maximumWeight, "maximum cache weight"),
+      ));
+    }
+    get _handle() {
+      if (this.#handle === 0) throw new Error("query cache is closed");
+      return this.#handle;
+    }
+    get stats() {
+      const output = ffi.vt_alloc(64);
+      try {
+        failure(ffi.vt_query_cache_stats(this._handle, output));
+        const memory = view();
+        return Object.freeze({
+          requests: memory.getBigUint64(output, true),
+          hits: memory.getBigUint64(output + 8, true),
+          misses: memory.getBigUint64(output + 16, true),
+          admissions: memory.getBigUint64(output + 24, true),
+          rejections: memory.getBigUint64(output + 32, true),
+          evictions: memory.getBigUint64(output + 40, true),
+          residentEntries: Number(memory.getBigUint64(output + 48, true)),
+          residentWeight: Number(memory.getBigUint64(output + 56, true)),
+        });
+      } finally {
+        ffi.vt_dealloc(output, 64);
+      }
+    }
+    query(query, maximumDistance, order = "traversal") {
+      const distance = unsigned32(maximumDistance, "maximum distance");
+      const selectedOrder = select(ORDERS, order, "query order");
+      if (query instanceof BigUint64Array) {
+        return withTokens(query, (pointer, length) => new QueryCursor(ffi.vt_cached_query_u64(
+          this._handle, pointer, length, distance, selectedOrder,
+        )));
+      }
+      if (typeof query !== "string" && !(query instanceof Uint8Array)) {
+        throw new TypeError("cached query requires text, Uint8Array, or BigUint64Array");
+      }
+      const operation = typeof query === "string"
+        ? ffi.vt_cached_query_text
+        : ffi.vt_cached_query_bytes;
+      return withBytes(query, (pointer, length) => new QueryCursor(operation(
+        this._handle, pointer, length, distance, selectedOrder,
+      )));
+    }
+    clear() { failure(ffi.vt_query_cache_clear(this._handle)); return this; }
+    resetStats() { failure(ffi.vt_query_cache_reset_stats(this._handle)); return this; }
+    close() {
+      if (this.#handle !== 0) {
+        ffi.vt_handle_close(this.#handle);
+        this.#handle = 0;
+      }
+    }
+    [Symbol.dispose]() { this.close(); }
   }
 
   class Wfst {
@@ -554,6 +635,12 @@ export async function createWasiRuntime({
   const liblevenshtein = Object.freeze({
     runtimeIdentity,
     transducer(dictionary, algorithm = "standard") { return new Transducer(dictionary, algorithm); },
+    queryCache(transducer, {
+      maximumEntries = 1024,
+      maximumWeight = 64 * 1024 * 1024,
+    } = {}) {
+      return new QueryCache(transducer, maximumEntries, maximumWeight);
+    },
   });
 
   const llingLlang = Object.freeze({

@@ -1,5 +1,7 @@
-import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import {
+  copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync,
+} from "node:fs";
+import { basename, join, parse } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
   cargoPackageVersion,
@@ -12,6 +14,7 @@ import {
 const skipBuild = process.argv.includes("--skip-build");
 const model = JSON.parse(readFileSync(join(runtimeRoot, "release", "version.json"), "utf8"));
 const buildRoot = join(runtimeRoot, ".build", "components");
+const cargoHome = join(runtimeRoot, ".build", "cargo-home");
 const sdkRoot = join(runtimeRoot, ".build", "native-sdk");
 
 const builds = [
@@ -38,6 +41,7 @@ for (const [root, version] of expected) {
 writeLocalCargoConfig();
 
 function runCargo(build) {
+  mkdirSync(cargoHome, { recursive: true });
   const args = [
     "build",
     "--manifest-path", join(build.root, "Cargo.toml"),
@@ -48,10 +52,17 @@ function runCargo(build) {
     "--no-default-features",
     "--features", "native-bindings-full",
   ];
-  // Build from the owning crate so Cargo applies that repository's portable
-  // target configuration without leaking the runtime-only patch overlay into
-  // an independent package's lockfile as `patch.unused` metadata.
-  const result = spawnSync("cargo", args, { cwd: build.root, stdio: "inherit" });
+  const ownerConfig = join(build.root, ".cargo", "config.toml");
+  if (existsSync(ownerConfig)) args.push("--config", ownerConfig);
+  // Cargo discovers configuration from the process working directory rather
+  // than `--manifest-path`. Run from the filesystem root and load only the
+  // owner's portable config explicitly. This prevents an unrelated parent or
+  // developer-level `[patch]` from dirtying an owner's immutable lockfile.
+  const result = spawnSync("cargo", args, {
+    cwd: parse(build.root).root,
+    env: { ...process.env, CARGO_HOME: cargoHome },
+    stdio: "inherit",
+  });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`cargo build failed for ${build.key}`);
 }

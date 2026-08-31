@@ -321,6 +321,7 @@ test("every index.d.ts member exists on the native path", async () => {
   dictionary.put("cat", 1n);
   const entryCursor = dictionary.streamEntries();
   const transducer = liblevenshtein.transducer(dictionary);
+  const cache = liblevenshtein.queryCache(transducer);
   const cursor = transducer.query("cat", 1);
   const pattern = liblevenshtein.phoneticPattern("c[ao]t");
   const rules = liblevenshtein.phoneticRules("english-orthography");
@@ -338,6 +339,7 @@ test("every index.d.ts member exists on the native path", async () => {
     ["PhoneticPattern", pattern],
     ["PhoneticRuleSet", rules],
     ["Transducer", transducer],
+    ["QueryCache", cache],
     ["Wfst", wfst],
     ["WfstBuilder", builder],
     ["LibdictensteinNamespace", libdictenstein],
@@ -373,11 +375,41 @@ test("every index.d.ts member exists on the native path", async () => {
     cursor.close();
     wfst.close();
     builder.close();
+    cache.close();
     transducer.close();
     pattern.close();
     rules.close();
     dictionary.close();
   }
+});
+
+test("native query cache is bounded, snapshot-aware, and owns its transducer", () => {
+  const dictionary = libdictenstein.dynamicDawg();
+  dictionary.set("cat", 1n).set("cot", 2n);
+  const transducer = liblevenshtein.transducer(dictionary);
+  const cache = liblevenshtein.queryCache(transducer, { maximumEntries: 4, maximumWeight: 4096 });
+  assert.deepEqual(collect(cache.query("cat", 1, "distance-then-term")), [
+    ["cat", 0, 1n], ["cot", 1, 2n],
+  ]);
+  assert.deepEqual(collect(cache.query("cat", 1, "distance-then-term")), [
+    ["cat", 0, 1n], ["cot", 1, 2n],
+  ]);
+  assert.equal(cache.stats.requests, 2n);
+  assert.equal(cache.stats.hits, 1n);
+  dictionary.delete("cot");
+  dictionary.set("cut", 3n);
+  transducer.close();
+  dictionary.close();
+  assert.deepEqual(collect(cache.query("cat", 1, "distance-then-term")), [
+    ["cat", 0, 1n], ["cut", 1, 3n],
+  ]);
+  assert.equal(cache.stats.misses, 2n);
+  cache.clear().resetStats();
+  assert.deepEqual(cache.stats, {
+    requests: 0n, hits: 0n, misses: 0n, admissions: 0n,
+    rejections: 0n, evictions: 0n, residentEntries: 0, residentWeight: 0,
+  });
+  cache.close();
 });
 
 test("native reducer and iterator drain a query to the same matches (C5)", () => {

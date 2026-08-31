@@ -153,6 +153,35 @@ test("WASI reducer and iterator drain a query to the same matches (C5)", async (
   }
 });
 
+test("WASI query cache covers text, bytes, and u64 with snapshot invalidation", async () => {
+  const runtime = await createWasiRuntime({ preopens: {} });
+  for (const [domain, first, second] of [
+    ["unicode", "cat", "cot"],
+    ["byte", new Uint8Array([0, 1]), new Uint8Array([0, 2])],
+    ["u64", new BigUint64Array([0n, 1n]), new BigUint64Array([0n, 2n])],
+  ]) {
+    const dictionary = runtime.libdictenstein.dynamicDawg(domain);
+    dictionary.set(first, 1n).set(second, 2n);
+    const transducer = runtime.liblevenshtein.transducer(dictionary);
+    const cache = runtime.liblevenshtein.queryCache(
+      transducer, { maximumEntries: 4, maximumWeight: 4096 },
+    );
+    const order = domain === "unicode" ? "distance-then-term" : "traversal";
+    assert.equal(values(cache.query(first, 1, order)).length, 2);
+    assert.equal(values(cache.query(first, 1, order)).length, 2);
+    assert.equal(cache.stats.hits, 1n);
+    dictionary.delete(second);
+    transducer.close();
+    dictionary.close();
+    assert.equal(values(cache.query(first, 1, order)).length, 1);
+    assert.equal(cache.stats.misses, 2n);
+    cache.clear().resetStats();
+    assert.equal(cache.stats.residentEntries, 0);
+    assert.equal(cache.stats.requests, 0n);
+    cache.close();
+  }
+});
+
 test("WASI duallity snapshots compose with lling-llang in the same instance", async () => {
   const runtime = await createWasiRuntime({ preopens: {} });
   const dictionary = runtime.libdictenstein.dynamicDawg();

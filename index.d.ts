@@ -73,8 +73,31 @@ export interface PhoneticPattern { readonly size: AutomatonSize; matches(input: 
 export interface PhoneticRuleSet { readonly size: number; apply(input: string): string; close(): void; }
 export interface Transducer {
   query(input: string, maximumDistance: number, order?: QueryOrder): QueryCursor;
-  query(input: Uint8Array | BigUint64Array | PhoneticPattern, maximumDistance: number): QueryCursor;
+  query(input: Uint8Array | BigUint64Array, maximumDistance: number, order?: QueryOrder): QueryCursor;
+  query(input: PhoneticPattern, maximumDistance: number): QueryCursor;
   close(): void;
+}
+export interface QueryCacheStats {
+  readonly requests: bigint;
+  readonly hits: bigint;
+  readonly misses: bigint;
+  readonly admissions: bigint;
+  readonly rejections: bigint;
+  readonly evictions: bigint;
+  readonly residentEntries: number;
+  readonly residentWeight: number;
+}
+export interface QueryCache {
+  readonly stats: QueryCacheStats;
+  query(input: string | Uint8Array | BigUint64Array, maximumDistance: number, order?: QueryOrder): QueryCursor;
+  clear(): this;
+  resetStats(): this;
+  close(): void;
+  [Symbol.dispose](): void;
+}
+export interface QueryCacheOptions {
+  readonly maximumEntries?: number;
+  readonly maximumWeight?: number;
 }
 
 export interface LibdictensteinNamespace {
@@ -86,6 +109,7 @@ export interface LibdictensteinNamespace {
 export interface LiblevenshteinNamespace {
   readonly runtimeIdentity: RuntimeIdentity;
   transducer(dictionary: DictionaryResource, algorithm?: Algorithm): Transducer;
+  queryCache(transducer: Transducer, options?: QueryCacheOptions): QueryCache;
   phoneticPattern(source: string): PhoneticPattern;
   llrePattern(source: string): PhoneticPattern;
   phoneticRules(source: string): PhoneticRuleSet;

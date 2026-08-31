@@ -8,13 +8,13 @@ use libdictenstein::bindings::{
 };
 use liblevenshtein::bindings::{
     Match, MatchBatch, MatchTerm, PhoneticPattern, PhoneticRuleSet, QueryCursor, QueryOrder,
-    ResourceTransducer,
+    ResourceQueryCache, ResourceTransducer,
 };
 use liblevenshtein::distance::{
     damerau_levenshtein_distance, damerau_levenshtein_distance_bounded, standard_distance,
     standard_distance_bounded, transposition_distance, transposition_distance_bounded,
 };
-use liblevenshtein::transducer::Algorithm;
+use liblevenshtein::transducer::{Algorithm, QueryCacheLimits};
 use lling_llang::bindings::OwnedWfstResource;
 use lling_llang::prelude::{MutableWfst, TropicalWeight, VectorWfst, Wfst};
 use std::convert::TryFrom;
@@ -922,12 +922,13 @@ impl JsTransducer {
         &self,
         query: &Uint8Array,
         maximum: usize,
+        selected_order: &str,
     ) -> Result<JsQueryCursor, JsValue> {
         let mut bytes = vec![0; query.length() as usize];
         query.copy_to(&mut bytes);
         let cursor = self
             .inner()?
-            .query_bytes(&bytes, maximum, QueryOrder::Traversal)
+            .query_bytes(&bytes, maximum, order(selected_order)?)
             .map_err(error)?;
         Ok(JsQueryCursor::new(cursor))
     }
@@ -938,12 +939,13 @@ impl JsTransducer {
         &self,
         query: &BigUint64Array,
         maximum: usize,
+        selected_order: &str,
     ) -> Result<JsQueryCursor, JsValue> {
         let mut tokens = vec![0; query.length() as usize];
         query.copy_to(&mut tokens);
         let cursor = self
             .inner()?
-            .query_u64(&tokens, maximum, QueryOrder::Traversal)
+            .query_u64(&tokens, maximum, order(selected_order)?)
             .map_err(error)?;
         Ok(JsQueryCursor::new(cursor))
     }
@@ -973,6 +975,160 @@ impl JsTransducer {
         self.inner
             .as_ref()
             .ok_or_else(|| error("transducer is closed"))
+    }
+}
+
+/// Exclusive synchronization-free bounded complete-query cache.
+#[wasm_bindgen(js_name = QueryCache)]
+pub struct JsQueryCache {
+    inner: Option<ResourceQueryCache>,
+}
+
+#[wasm_bindgen(js_class = QueryCache)]
+impl JsQueryCache {
+    /// Retain a transducer and configure hard per-order bounds.
+    #[wasm_bindgen(constructor)]
+    pub fn new(
+        transducer: &JsTransducer,
+        maximum_entries: usize,
+        maximum_weight: usize,
+    ) -> Result<JsQueryCache, JsValue> {
+        Ok(Self {
+            inner: Some(ResourceQueryCache::new(
+                transducer.inner()?.clone(),
+                QueryCacheLimits::new(maximum_entries, maximum_weight),
+            )),
+        })
+    }
+
+    /// Copy aggregate policy counters and current residency.
+    pub fn stats(&self) -> Result<Object, JsValue> {
+        let cache = self.inner()?;
+        let traversal = cache.traversal_stats();
+        let ordered = cache.ordered_stats();
+        let output = Object::new();
+        property(
+            &output,
+            "requests",
+            &BigInt::from(traversal.requests().saturating_add(ordered.requests())).into(),
+        )?;
+        property(
+            &output,
+            "hits",
+            &BigInt::from(traversal.hits().saturating_add(ordered.hits())).into(),
+        )?;
+        property(
+            &output,
+            "misses",
+            &BigInt::from(traversal.misses().saturating_add(ordered.misses())).into(),
+        )?;
+        property(
+            &output,
+            "admissions",
+            &BigInt::from(traversal.admissions().saturating_add(ordered.admissions())).into(),
+        )?;
+        property(
+            &output,
+            "rejections",
+            &BigInt::from(traversal.rejections().saturating_add(ordered.rejections())).into(),
+        )?;
+        property(
+            &output,
+            "evictions",
+            &BigInt::from(traversal.evictions().saturating_add(ordered.evictions())).into(),
+        )?;
+        property(
+            &output,
+            "residentEntries",
+            &JsValue::from_f64(cache.len() as f64),
+        )?;
+        property(
+            &output,
+            "residentWeight",
+            &JsValue::from_f64(cache.resident_weight() as f64),
+        )?;
+        Ok(output)
+    }
+
+    /// Drop resident results while preserving policy counters.
+    pub fn clear(&mut self) -> Result<(), JsValue> {
+        self.inner_mut()?.clear();
+        Ok(())
+    }
+
+    /// Reset counters while preserving residency and frequency state.
+    #[wasm_bindgen(js_name = resetStats)]
+    pub fn reset_stats(&mut self) -> Result<(), JsValue> {
+        self.inner_mut()?.reset_stats();
+        Ok(())
+    }
+
+    /// Query Unicode text through the bounded complete-result cache.
+    #[wasm_bindgen(js_name = queryText)]
+    pub fn query_text(
+        &mut self,
+        query: &str,
+        maximum: usize,
+        selected_order: &str,
+    ) -> Result<JsQueryCursor, JsValue> {
+        Ok(JsQueryCursor::new(
+            self.inner_mut()?
+                .query_utf8(query, maximum, order(selected_order)?)
+                .map_err(error)?,
+        ))
+    }
+
+    /// Query exact bytes through the bounded complete-result cache.
+    #[wasm_bindgen(js_name = queryBytes)]
+    pub fn query_bytes(
+        &mut self,
+        query: &Uint8Array,
+        maximum: usize,
+        selected_order: &str,
+    ) -> Result<JsQueryCursor, JsValue> {
+        let mut bytes = vec![0; query.length() as usize];
+        query.copy_to(&mut bytes);
+        Ok(JsQueryCursor::new(
+            self.inner_mut()?
+                .query_bytes(&bytes, maximum, order(selected_order)?)
+                .map_err(error)?,
+        ))
+    }
+
+    /// Query exact u64 tokens through the bounded complete-result cache.
+    #[wasm_bindgen(js_name = queryU64)]
+    pub fn query_u64(
+        &mut self,
+        query: &BigUint64Array,
+        maximum: usize,
+        selected_order: &str,
+    ) -> Result<JsQueryCursor, JsValue> {
+        let mut tokens = vec![0; query.length() as usize];
+        query.copy_to(&mut tokens);
+        Ok(JsQueryCursor::new(
+            self.inner_mut()?
+                .query_u64(&tokens, maximum, order(selected_order)?)
+                .map_err(error)?,
+        ))
+    }
+
+    /// Release resident results and the retained transducer.
+    pub fn close(&mut self) {
+        self.inner = None;
+    }
+}
+
+impl JsQueryCache {
+    fn inner(&self) -> Result<&ResourceQueryCache, JsValue> {
+        self.inner
+            .as_ref()
+            .ok_or_else(|| error("query cache is closed"))
+    }
+
+    fn inner_mut(&mut self) -> Result<&mut ResourceQueryCache, JsValue> {
+        self.inner
+            .as_mut()
+            .ok_or_else(|| error("query cache is closed"))
     }
 }
 

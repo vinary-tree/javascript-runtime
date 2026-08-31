@@ -82,6 +82,39 @@ const histogram = cursor.reduceBatches(
 );
 ```
 
+### Repeated-query cache
+
+`liblevenshtein.queryCache` creates one exclusive, synchronization-free
+`QueryCache` that retains its transducer. Its two result-order shards enforce
+independent entry and logical-weight bounds. Create one cache per Worker or
+request-processing lane; do not share a mutable cache between concurrent
+callers.
+
+```js
+const transducer = liblevenshtein.transducer(dictionary);
+using cache = liblevenshtein.queryCache(transducer, {
+  maximumEntries: 512,
+  maximumWeight: 32 * 1024 * 1024,
+});
+transducer.close(); // The cache owns an independent retain.
+
+using first = cache.query("speling", 2, "distance-then-term");
+console.log([...first]);
+using repeated = cache.query("speling", 2, "distance-then-term");
+console.log([...repeated], cache.stats.hits);
+
+cache.clear();      // Drops results but preserves policy counters.
+cache.resetStats(); // Resets counters but preserves frequency history.
+```
+
+Every request captures a dictionary snapshot identity. A new producer or
+revision invalidates stale residency before lookup. Providers without stable
+snapshot identity fail with an unsupported error because serving a guessed hit
+could be incorrect. Hits still return independent `QueryCursor` objects, so a
+cursor may outlive `QueryCache.close`. For the TinyLFU admission, SIEVE
+eviction, ownership, security, and measurement rationale, read the
+[bounded cross-language query-cache guide](https://github.com/vinary-tree/liblevenshtein-rust/blob/master/docs/bindings/query-cache.md).
+
 ### Compose a dictionary-derived query with another WFST
 
 `duallity.wfst` turns a dictionary query into a lazy WFST. `llingLlang.compose`
@@ -160,7 +193,31 @@ The fields `Lookup.found`, `Lookup.value`, `Term.domain`, `Term.value`,
 
 `QueryOrder` accepts `"traversal"` for backend traversal order or
 `"distance-then-term"` for increasing distance with a deterministic term
-tiebreaker. Byte- and `u64`-domain queries currently use traversal order.
+tiebreaker. Distance-then-term ordering applies to Unicode queries. Byte and
+`u64` queries use traversal order and reject an ordered request rather than
+silently changing its semantics.
+
+### Query-cache configuration and statistics
+
+| Type or field | Meaning |
+|---|---|
+| `QueryCacheOptions` | Optional hard residency limits supplied to `liblevenshtein.queryCache`. |
+| `QueryCacheOptions.maximumEntries` | Maximum resident results in each order shard; defaults to 1,024. Zero disables admission. |
+| `QueryCacheOptions.maximumWeight` | Maximum aggregate logical result weight in each order shard; defaults to 64 MiB. Zero disables admission. |
+| `QueryCacheStats` | Frozen cumulative policy counters plus current aggregate residency. |
+| `QueryCacheStats.requests` | Requests observed since construction or the last statistics reset. |
+| `QueryCacheStats.hits` | Requests served from an exact resident result. |
+| `QueryCacheStats.misses` | Requests that executed the exact dictionary/automaton product walk. |
+| `QueryCacheStats.admissions` | Computed results accepted into bounded residency. |
+| `QueryCacheStats.rejections` | Computed results returned exactly but not admitted. |
+| `QueryCacheStats.evictions` | Resident results displaced by admitted candidates. |
+| `QueryCacheStats.residentEntries` | Current result count summed across traversal and ordered shards. |
+| `QueryCacheStats.residentWeight` | Current logical weight summed across both shards. |
+
+`requests`, `hits`, `misses`, `admissions`, `rejections`, and `evictions` are
+`bigint` because the native counters are unsigned 64-bit values. Residency is
+bounded by JavaScript-safe integer configuration values and is returned as
+`number`.
 
 ## Dictionary API
 
@@ -247,6 +304,13 @@ They return `undefined` only when the distance exceeds it.
 | `liblevenshtein.transducer(dictionary, algorithm?)` | Validate same-runtime dictionary identity, retain it, and construct a `Transducer`. Defaults to `"standard"`. |
 | `Transducer.query(input, maximumDistance, order?)` | Capture one query-start snapshot and return a `QueryCursor`. Strings accept `QueryOrder`; typed arrays and patterns use traversal order. |
 | `Transducer.close()` | Release the transducer's dictionary retain. Existing cursors remain valid because each owns its snapshot. |
+| `liblevenshtein.queryCache(transducer, options?)` | Retain a transducer behind hard per-order entry and logical-weight bounds. |
+| `QueryCache.query(input, maximumDistance, order?)` | Return an independent cursor over an exact resident or newly computed complete result. |
+| `QueryCache.stats` | Frozen TinyLFU/SIEVE counters plus current aggregate residency. |
+| `QueryCache.clear()` | Drop resident results while preserving counters. |
+| `QueryCache.resetStats()` | Reset counters while preserving residency and frequency history. |
+| `QueryCache.close()` | Release residency and the retained transducer; existing cursors remain valid. |
+| `QueryCache[Symbol.dispose]()` | Idempotent explicit-resource-management alias for `close()`. |
 
 `Transducer.query` accepts `string`, `Uint8Array`, `BigUint64Array`, or a
 same-runtime `PhoneticPattern`. A type/domain mismatch throws instead of
@@ -296,7 +360,13 @@ mapping so the facade, native ABI, tests, and documentation remain auditable.
 | `llev_true_damerau_distance_threshold` | `liblevenshtein.trueDamerauDistanceThreshold` |
 | `llev_transducer_new` | `liblevenshtein.transducer` |
 | `llev_transducer_free` | `Transducer.close` |
+| `llev_query_cache_new` | `liblevenshtein.queryCache` |
+| `llev_query_cache_clear` | `QueryCache.clear` |
+| `llev_query_cache_reset_stats` | `QueryCache.resetStats` |
+| `llev_query_cache_stats` | `QueryCache.stats` |
+| `llev_query_cache_free` | `QueryCache.close` |
 | `llev_transducer_query_utf8` / `llev_transducer_query_bytes` / `llev_transducer_query_u64` / `llev_transducer_query_pattern` | `Transducer.query` |
+| `llev_query_cache_query_utf8` / `llev_query_cache_query_bytes` / `llev_query_cache_query_u64` | `QueryCache.query` |
 | `llev_query_cursor_next_batch` | `QueryCursor.nextBatch` |
 | `llev_query_cursor_release_batch` | `QueryCursor.nextBatch` settles the lease before returning. |
 | iterator protocol | `QueryCursor.next` |

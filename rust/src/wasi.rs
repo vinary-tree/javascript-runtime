@@ -5,9 +5,9 @@ use libdictenstein::bindings::{
     BindingValueMerge, DynamicDawgBinding, OwnedDictionaryResource, PersistentARTrieBinding,
 };
 use liblevenshtein::bindings::{
-    MatchBatch, MatchTerm, QueryCursor, QueryOrder, ResourceTransducer,
+    MatchBatch, MatchTerm, QueryCursor, QueryOrder, ResourceQueryCache, ResourceTransducer,
 };
-use liblevenshtein::transducer::Algorithm;
+use liblevenshtein::transducer::{Algorithm, QueryCacheLimits};
 use lling_llang::bindings::OwnedWfstResource;
 use lling_llang::prelude::{MutableWfst, TropicalWeight, VectorWfst, Wfst};
 use std::collections::HashMap;
@@ -113,6 +113,7 @@ struct WasiWfst {
 enum Handle {
     Dictionary(Dictionary),
     Transducer(ResourceTransducer),
+    QueryCache(ResourceQueryCache),
     Cursor(Cursor),
     EntryCursor(EntryCursor),
     WfstBuilder(VectorWfst<char, TropicalWeight>),
@@ -196,6 +197,22 @@ fn selected_algorithm(value: u32) -> Result<Algorithm, &'static str> {
         3 => Ok(Algorithm::DamerauLevenshtein),
         _ => Err("unknown algorithm"),
     }
+}
+
+fn selected_order(value: u32) -> Result<QueryOrder, &'static str> {
+    match value {
+        0 => Ok(QueryOrder::Traversal),
+        1 => Ok(QueryOrder::DistanceThenTerm),
+        _ => Err("unknown query order"),
+    }
+}
+
+fn insert_cursor(registry: &mut Registry, cursor: QueryCursor) -> u32 {
+    registry.insert(Handle::Cursor(Cursor {
+        inner: cursor,
+        batch: MatchBatch::default(),
+        encoded: Vec::new(),
+    }))
 }
 
 fn selected_algebra_operation(value: u32) -> Result<BindingAlgebraOperation, &'static str> {
@@ -733,6 +750,86 @@ pub extern "C" fn vt_transducer_new(dictionary_handle: u32, algorithm: u32) -> u
     }
 }
 
+/// Retain a transducer in an exclusive bounded complete-query cache.
+#[no_mangle]
+pub extern "C" fn vt_query_cache_new(
+    transducer_handle: u32,
+    maximum_entries: u32,
+    maximum_weight: u32,
+) -> u32 {
+    let result = {
+        let registry = locked_registry();
+        match registry.handles.get(&transducer_handle) {
+            Some(Handle::Transducer(transducer)) => Ok(ResourceQueryCache::new(
+                transducer.clone(),
+                QueryCacheLimits::new(maximum_entries as usize, maximum_weight as usize),
+            )),
+            _ => Err("invalid transducer handle"),
+        }
+    };
+    let mut registry = locked_registry();
+    match result {
+        Ok(cache) => registry.insert(Handle::QueryCache(cache)),
+        Err(error) => registry.fail(error),
+    }
+}
+
+/// Write eight little-endian u64 policy/residency fields to linear memory.
+#[no_mangle]
+pub extern "C" fn vt_query_cache_stats(handle: u32, output_pointer: u32) -> u32 {
+    if output_pointer == 0 {
+        return locked_registry().fail("query-cache stats output is null");
+    }
+    let registry = locked_registry();
+    let Some(Handle::QueryCache(cache)) = registry.handles.get(&handle) else {
+        drop(registry);
+        return locked_registry().fail("invalid query-cache handle");
+    };
+    let traversal = cache.traversal_stats();
+    let ordered = cache.ordered_stats();
+    let values = [
+        traversal.requests().saturating_add(ordered.requests()),
+        traversal.hits().saturating_add(ordered.hits()),
+        traversal.misses().saturating_add(ordered.misses()),
+        traversal.admissions().saturating_add(ordered.admissions()),
+        traversal.rejections().saturating_add(ordered.rejections()),
+        traversal.evictions().saturating_add(ordered.evictions()),
+        cache.len() as u64,
+        cache.resident_weight() as u64,
+    ];
+    let output = unsafe { slice::from_raw_parts_mut(output_pointer as *mut u8, 64) };
+    for (index, value) in values.into_iter().enumerate() {
+        put_u64(output, index * 8, value);
+    }
+    0
+}
+
+/// Drop resident results while preserving policy counters.
+#[no_mangle]
+pub extern "C" fn vt_query_cache_clear(handle: u32) -> u32 {
+    let mut registry = locked_registry();
+    match registry.handles.get_mut(&handle) {
+        Some(Handle::QueryCache(cache)) => {
+            cache.clear();
+            0
+        }
+        _ => registry.fail("invalid query-cache handle"),
+    }
+}
+
+/// Reset counters while preserving residency and frequency state.
+#[no_mangle]
+pub extern "C" fn vt_query_cache_reset_stats(handle: u32) -> u32 {
+    let mut registry = locked_registry();
+    match registry.handles.get_mut(&handle) {
+        Some(Handle::QueryCache(cache)) => {
+            cache.reset_stats();
+            0
+        }
+        _ => registry.fail("invalid query-cache handle"),
+    }
+}
+
 /// Allocate an empty Unicode/tropical lling-llang VectorWfst builder.
 #[no_mangle]
 pub extern "C" fn vt_wfst_builder_new() -> u32 {
@@ -1071,11 +1168,7 @@ pub unsafe extern "C" fn vt_query_text(
     let result = (|| {
         let query = str::from_utf8(unsafe { bytes(query_pointer, query_length) })
             .map_err(|_| "query is not UTF-8")?;
-        let order = match order {
-            0 => QueryOrder::Traversal,
-            1 => QueryOrder::DistanceThenTerm,
-            _ => return Err("unknown query order".into()),
-        };
+        let order = selected_order(order)?;
         let registry = locked_registry();
         let Some(Handle::Transducer(transducer)) = registry.handles.get(&transducer_handle) else {
             return Err("invalid transducer handle".into());
@@ -1086,11 +1179,157 @@ pub unsafe extern "C" fn vt_query_text(
     })();
     let mut registry = locked_registry();
     match result {
-        Ok(cursor) => registry.insert(Handle::Cursor(Cursor {
-            inner: cursor,
-            batch: MatchBatch::default(),
-            encoded: Vec::new(),
-        })),
+        Ok(cursor) => insert_cursor(&mut registry, cursor),
+        Err(error) => registry.fail(error),
+    }
+}
+
+/// Start a lazy exact-byte query that captures its dictionary snapshot now.
+#[no_mangle]
+pub unsafe extern "C" fn vt_query_bytes(
+    transducer_handle: u32,
+    query_pointer: u32,
+    query_length: u32,
+    maximum_distance: u32,
+    order: u32,
+) -> u32 {
+    let order = match selected_order(order) {
+        Ok(value) => value,
+        Err(error) => return locked_registry().fail(error),
+    };
+    let query = unsafe { bytes(query_pointer, query_length) };
+    let result = {
+        let registry = locked_registry();
+        match registry.handles.get(&transducer_handle) {
+            Some(Handle::Transducer(transducer)) => transducer
+                .query_bytes(query, maximum_distance as usize, order)
+                .map_err(|error| error.to_string()),
+            _ => Err("invalid transducer handle".into()),
+        }
+    };
+    let mut registry = locked_registry();
+    match result {
+        Ok(cursor) => insert_cursor(&mut registry, cursor),
+        Err(error) => registry.fail(error),
+    }
+}
+
+/// Start a lazy exact-u64-token query that captures its dictionary snapshot now.
+#[no_mangle]
+pub unsafe extern "C" fn vt_query_u64(
+    transducer_handle: u32,
+    query_pointer: u32,
+    query_length: u32,
+    maximum_distance: u32,
+    order: u32,
+) -> u32 {
+    let query = match unsafe { tokens(query_pointer, query_length) } {
+        Ok(value) => value,
+        Err(error) => return locked_registry().fail(error),
+    };
+    let order = match selected_order(order) {
+        Ok(value) => value,
+        Err(error) => return locked_registry().fail(error),
+    };
+    let result = {
+        let registry = locked_registry();
+        match registry.handles.get(&transducer_handle) {
+            Some(Handle::Transducer(transducer)) => transducer
+                .query_u64(&query, maximum_distance as usize, order)
+                .map_err(|error| error.to_string()),
+            _ => Err("invalid transducer handle".into()),
+        }
+    };
+    let mut registry = locked_registry();
+    match result {
+        Ok(cursor) => insert_cursor(&mut registry, cursor),
+        Err(error) => registry.fail(error),
+    }
+}
+
+/// Query Unicode text through an exclusive bounded complete-result cache.
+#[no_mangle]
+pub unsafe extern "C" fn vt_cached_query_text(
+    cache_handle: u32,
+    query_pointer: u32,
+    query_length: u32,
+    maximum_distance: u32,
+    order: u32,
+) -> u32 {
+    let query = match str::from_utf8(unsafe { bytes(query_pointer, query_length) }) {
+        Ok(value) => value,
+        Err(_) => return locked_registry().fail("query is not UTF-8"),
+    };
+    let order = match selected_order(order) {
+        Ok(value) => value,
+        Err(error) => return locked_registry().fail(error),
+    };
+    let mut registry = locked_registry();
+    let result = match registry.handles.get_mut(&cache_handle) {
+        Some(Handle::QueryCache(cache)) => cache
+            .query_utf8(query, maximum_distance as usize, order)
+            .map_err(|error| error.to_string()),
+        _ => Err("invalid query-cache handle".into()),
+    };
+    match result {
+        Ok(cursor) => insert_cursor(&mut registry, cursor),
+        Err(error) => registry.fail(error),
+    }
+}
+
+/// Query exact bytes through an exclusive bounded complete-result cache.
+#[no_mangle]
+pub unsafe extern "C" fn vt_cached_query_bytes(
+    cache_handle: u32,
+    query_pointer: u32,
+    query_length: u32,
+    maximum_distance: u32,
+    order: u32,
+) -> u32 {
+    let query = unsafe { bytes(query_pointer, query_length) };
+    let order = match selected_order(order) {
+        Ok(value) => value,
+        Err(error) => return locked_registry().fail(error),
+    };
+    let mut registry = locked_registry();
+    let result = match registry.handles.get_mut(&cache_handle) {
+        Some(Handle::QueryCache(cache)) => cache
+            .query_bytes(query, maximum_distance as usize, order)
+            .map_err(|error| error.to_string()),
+        _ => Err("invalid query-cache handle".into()),
+    };
+    match result {
+        Ok(cursor) => insert_cursor(&mut registry, cursor),
+        Err(error) => registry.fail(error),
+    }
+}
+
+/// Query exact u64 tokens through an exclusive bounded complete-result cache.
+#[no_mangle]
+pub unsafe extern "C" fn vt_cached_query_u64(
+    cache_handle: u32,
+    query_pointer: u32,
+    query_length: u32,
+    maximum_distance: u32,
+    order: u32,
+) -> u32 {
+    let query = match unsafe { tokens(query_pointer, query_length) } {
+        Ok(value) => value,
+        Err(error) => return locked_registry().fail(error),
+    };
+    let order = match selected_order(order) {
+        Ok(value) => value,
+        Err(error) => return locked_registry().fail(error),
+    };
+    let mut registry = locked_registry();
+    let result = match registry.handles.get_mut(&cache_handle) {
+        Some(Handle::QueryCache(cache)) => cache
+            .query_u64(&query, maximum_distance as usize, order)
+            .map_err(|error| error.to_string()),
+        _ => Err("invalid query-cache handle".into()),
+    };
+    match result {
+        Ok(cursor) => insert_cursor(&mut registry, cursor),
         Err(error) => registry.fail(error),
     }
 }

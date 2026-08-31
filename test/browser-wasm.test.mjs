@@ -96,6 +96,32 @@ test("u64 dictionaries and batch reduction remain streaming", () => {
   dictionary.close();
 });
 
+test("browser query cache invalidates on snapshot identity and retains its source", () => {
+  const dictionary = libdictenstein.dynamicDawg();
+  dictionary.set("cat", 1n).set("cot", 2n);
+  const transducer = liblevenshtein.transducer(dictionary);
+  const cache = liblevenshtein.queryCache(transducer, { maximumEntries: 4, maximumWeight: 4096 });
+  assert.deepEqual(collect(cache.query("cat", 1, "distance-then-term")), [
+    { term: "cat", distance: 0, id: 1n },
+    { term: "cot", distance: 1, id: 2n },
+  ]);
+  collect(cache.query("cat", 1, "distance-then-term"));
+  assert.equal(cache.stats.hits, 1n);
+  dictionary.delete("cot");
+  dictionary.set("cut", 3n);
+  transducer.close();
+  dictionary.close();
+  assert.deepEqual(collect(cache.query("cat", 1, "distance-then-term")), [
+    { term: "cat", distance: 0, id: 1n },
+    { term: "cut", distance: 1, id: 3n },
+  ]);
+  cache.clear();
+  cache.resetStats();
+  assert.equal(cache.stats.residentEntries, 0);
+  assert.equal(cache.stats.requests, 0n);
+  cache.close();
+});
+
 test("browser dictionaries expose host-owned Map collection snapshots", () => {
   const dictionary = libdictenstein.dynamicDawg();
   dictionary.set("cat", 1n).set("caff", null).set("dog", 3n);
