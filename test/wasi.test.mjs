@@ -153,6 +153,58 @@ test("WASI reducer and iterator drain a query to the same matches (C5)", async (
   }
 });
 
+test("WASI exposes lock-safe bounded cache hits and exact revision invalidation", async () => {
+  const runtime = await createWasiRuntime({ preopens: {} });
+  const dictionary = runtime.libdictenstein.dynamicDawg();
+  dictionary.set("cat", 1n).set("cot", 2n);
+  const transducer = runtime.liblevenshtein.transducer(dictionary);
+  const cache = runtime.liblevenshtein.queryCache(transducer, {
+    maximumEntries: 4,
+    maximumWeight: 4096,
+  });
+  assert.deepEqual(values(cache.query("cat", 1, "distance-then-term")), [
+    ["cat", 1n], ["cot", 2n],
+  ]);
+  values(cache.query("cat", 1, "distance-then-term"));
+  assert.equal(cache.stats.hits, 1n);
+  dictionary.delete("cot");
+  transducer.close();
+  dictionary.close();
+  assert.deepEqual(values(cache.query("cat", 1, "distance-then-term")), [["cat", 1n]]);
+  cache.clear().resetStats();
+  assert.equal(cache.stats.residentEntries, 0);
+  assert.equal(cache.stats.requests, 0n);
+  cache.close();
+
+  const bytes = runtime.libdictenstein.dynamicDawg("byte");
+  bytes.set(new Uint8Array([99, 97, 116]), 3n);
+  const byteTransducer = runtime.liblevenshtein.transducer(bytes);
+  assert.deepEqual(values(byteTransducer.query(new Uint8Array([99, 117, 116]), 1)), [
+    [new Uint8Array([99, 97, 116]), 3n],
+  ]);
+  const byteCache = runtime.liblevenshtein.queryCache(byteTransducer);
+  assert.deepEqual(values(byteCache.query(new Uint8Array([99, 117, 116]), 1)), [
+    [new Uint8Array([99, 97, 116]), 3n],
+  ]);
+  byteCache.close();
+  byteTransducer.close();
+  bytes.close();
+
+  const tokens = runtime.libdictenstein.dynamicDawg("u64");
+  tokens.set(new BigUint64Array([1n, 2n]), 4n);
+  const tokenTransducer = runtime.liblevenshtein.transducer(tokens);
+  assert.deepEqual(values(tokenTransducer.query(new BigUint64Array([1n, 3n]), 1)), [
+    [new BigUint64Array([1n, 2n]), 4n],
+  ]);
+  const tokenCache = runtime.liblevenshtein.queryCache(tokenTransducer);
+  assert.deepEqual(values(tokenCache.query(new BigUint64Array([1n, 3n]), 1)), [
+    [new BigUint64Array([1n, 2n]), 4n],
+  ]);
+  tokenCache.close();
+  tokenTransducer.close();
+  tokens.close();
+});
+
 test("WASI duallity snapshots compose with lling-llang in the same instance", async () => {
   const runtime = await createWasiRuntime({ preopens: {} });
   const dictionary = runtime.libdictenstein.dynamicDawg();

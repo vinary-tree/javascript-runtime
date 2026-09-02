@@ -246,7 +246,7 @@ They return `undefined` only when the distance exceeds it.
 |---|---|
 | `liblevenshtein.transducer(dictionary, algorithm?)` | Validate same-runtime dictionary identity, retain it, and construct a `Transducer`. Defaults to `"standard"`. |
 | `Transducer.query(input, maximumDistance, order?)` | Capture one query-start snapshot and return a `QueryCursor`. Strings accept `QueryOrder`; typed arrays and patterns use traversal order. |
-| `Transducer.close()` | Release the transducer's dictionary retain. Existing cursors remain valid because each owns its snapshot. |
+| `Transducer.close()` / `Transducer[Symbol.dispose]()` | Release the transducer's dictionary retain. Existing cursors remain valid because each owns its snapshot. |
 
 `Transducer.query` accepts `string`, `Uint8Array`, `BigUint64Array`, or a
 same-runtime `PhoneticPattern`. A type/domain mismatch throws instead of
@@ -261,6 +261,56 @@ coercing data or silently changing semantics.
 | `QueryCursor.reduceBatches(reducer, initial, batchSize?)` | Fold bounded batches, default 256, and close in `finally`. |
 | `QueryCursor.return()` | Close when `for...of` terminates early. |
 | `QueryCursor.close()` / `QueryCursor[Symbol.dispose]()` | Idempotently release the captured snapshot and cursor arenas. |
+
+### Bounded query cache
+
+`liblevenshtein.queryCache(transducer, options?)` retains the transducer and
+creates an exclusive `QueryCache`. `QueryCacheOptions.maximumEntries` defaults
+to 1,024 and `QueryCacheOptions.maximumWeight` defaults to 64 MiB; both are hard
+bounds applied independently to traversal-order and distance-then-term shards.
+A zero bound disables admission while preserving exact query results.
+
+| API | Semantics |
+|---|---|
+| `liblevenshtein.queryCache(transducer, options?)` | Create a bounded complete-result cache over a same-runtime `Transducer`. |
+| `QueryCache.query(input, maximumDistance, order?)` | Return an independent `QueryCursor` over an exact cached or freshly computed result. Strings accept `QueryOrder`; `Uint8Array` and `BigUint64Array` inputs use traversal order. |
+| `QueryCache.stats` | Return immutable `QueryCacheStats`: `requests`, `hits`, `misses`, `admissions`, `rejections`, `evictions`, `residentEntries`, and `residentWeight`. |
+| `QueryCache.clear()` | Drop resident results, retain source ownership and counters, and return the cache for chaining. |
+| `QueryCache.resetStats()` | Reset counters, retain residency/frequency state, and return the cache for chaining. |
+| `QueryCache.close()` / `QueryCache[Symbol.dispose]()` | Idempotently release resident results and the retained transducer. Existing cursors remain valid. |
+
+| Statistic | Meaning |
+|---|---|
+| `QueryCacheStats.requests` | Total cache queries. |
+| `QueryCacheStats.hits` | Queries served from resident immutable results. |
+| `QueryCacheStats.misses` | Queries that executed the exact product walk. |
+| `QueryCacheStats.admissions` | Computed results admitted by the bounded policy. |
+| `QueryCacheStats.rejections` | Exact results returned but not retained. |
+| `QueryCacheStats.evictions` | Resident results displaced by SIEVE. |
+| `QueryCacheStats.residentEntries` | Current entries across both order shards. |
+| `QueryCacheStats.residentWeight` | Current logical byte weight across both shards. |
+
+TinyLFU estimates which results are worth admitting; SIEVE selects a resident
+entry when space must be reclaimed. Both policies affect residency only. Cache
+misses always execute the exact query, and dictionary snapshot identity clears
+stale residency before a changed revision can be observed. A cache is
+synchronization-free and single-owner: use one cache per Worker rather than
+sharing one mutable cache across concurrent callers.
+
+```js
+const transducer = liblevenshtein.transducer(dictionary);
+using cache = liblevenshtein.queryCache(transducer, {
+  maximumEntries: 512,
+  maximumWeight: 32 * 1024 * 1024,
+});
+try {
+  using cursor = cache.query("speling", 2, "distance-then-term");
+  console.log([...cursor]);
+  console.log(cache.stats.hits);
+} finally {
+  transducer.close();
+}
+```
 
 ### Phonetic patterns and rules
 
@@ -296,6 +346,12 @@ mapping so the facade, native ABI, tests, and documentation remain auditable.
 | `llev_true_damerau_distance_threshold` | `liblevenshtein.trueDamerauDistanceThreshold` |
 | `llev_transducer_new` | `liblevenshtein.transducer` |
 | `llev_transducer_free` | `Transducer.close` |
+| `llev_query_cache_new` | `liblevenshtein.queryCache` |
+| `llev_query_cache_clear` | `QueryCache.clear` |
+| `llev_query_cache_reset_stats` | `QueryCache.resetStats` |
+| `llev_query_cache_stats` | `QueryCache.stats` |
+| `llev_query_cache_free` | `QueryCache.close` |
+| `llev_query_cache_query_utf8` / `llev_query_cache_query_bytes` / `llev_query_cache_query_u64` | `QueryCache.query` |
 | `llev_transducer_query_utf8` / `llev_transducer_query_bytes` / `llev_transducer_query_u64` / `llev_transducer_query_pattern` | `Transducer.query` |
 | `llev_query_cursor_next_batch` | `QueryCursor.nextBatch` |
 | `llev_query_cursor_release_batch` | `QueryCursor.nextBatch` settles the lease before returning. |
@@ -385,11 +441,16 @@ The WASI dictionary namespace adds
 checkpoint at a preopened path. The WASI liblevenshtein namespace exposes
 `WasiRuntime.liblevenshtein.transducer`; its returned transducer has the same
 query-start snapshot and close semantics described above.
+`WasiRuntime.liblevenshtein.queryCache` accepts that transducer and exposes the
+same UTF-8, byte, and u64 cache, statistics, invalidation, and lifecycle
+contract. Provider work executes while the exclusive cache handle is outside
+the WASI resource table, so a callback never runs under the table lock and
+reentrant use fails diagnostically.
 
 ## Lifecycle and ownership
 
 Every resource type that declares `close()` owns native or WebAssembly state.
-`Dictionary`, `DictionaryEntryCursor`, and `QueryCursor` also implement
+`Dictionary`, `DictionaryEntryCursor`, `QueryCursor`, and `QueryCache` also implement
 `Symbol.dispose`, so they support explicit resource management:
 
 ```js
@@ -413,13 +474,15 @@ cleanup.
 Closing a dictionary does not invalidate a transducer that already retained it.
 Closing a transducer does not invalidate an existing query cursor: the cursor
 owns the immutable snapshot captured at query start.
+Closing a transducer or source dictionary also does not invalidate a live
+`QueryCache`, because the cache retained its own transducer reference.
 
 ## Errors
 
 | JavaScript error | Cause |
 |---|---|
 | `TypeError` | Wrong key/input type, unit-domain mismatch, wrong interface, cross-runtime resource, or `toMap()` on typed-array keys. |
-| `RangeError` | A batch size or numeric bound is not in its accepted positive safe-integer domain. |
+| `RangeError` | A batch size or numeric bound is outside its documented safe-integer domain. Cache limits may be zero; batch sizes and query bounds follow their operation contracts. |
 | `Error` | Native status failure, closed resource, unsupported feature, I/O failure, provider failure, or contained Rust panic. The message carries the bounded native error text. |
 | WebAssembly trap | A failure below status containment. It terminates that instance, not the host process; discard the instance and its resources. |
 
@@ -440,6 +503,11 @@ WFSTs each remain pinned to the revision captured at their start. No traversal
 holds a writer lock, and no later mutation changes already yielded or pending
 results.
 
+`QueryCache` is intentionally exclusive and synchronization-free. Native and
+browser callers keep one cache in one JavaScript agent. The WASI adapter removes
+the cache from its handle table during provider execution, so callbacks run
+without a table mutex and recursive use of the same cache is rejected.
+
 ## Performance
 
 - Scalar distance functions cross the boundary once per call.
@@ -453,6 +521,10 @@ results.
   JavaScript `Map` or per-entry host calls.
 - `QueryCursor.next()` internally amortizes traversal through native batching;
   `nextBatch` and `reduceBatches` make the batching explicit.
+- `QueryCache` avoids repeated automaton/dictionary walks for hot queries. Hits
+  still construct an independent cursor and copy requested values into the host;
+  benchmark cold misses, hot hits, admission rejection, and revision
+  invalidation separately.
 - Same-runtime dictionaries and WFSTs cross project boundaries as retained
   resources. They are not serialized or copied.
 - `llingLlang.compose` and `duallity.wfst` preserve lazy product/state

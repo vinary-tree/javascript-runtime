@@ -75,6 +75,34 @@ export interface Transducer {
   query(input: string, maximumDistance: number, order?: QueryOrder): QueryCursor;
   query(input: Uint8Array | BigUint64Array | PhoneticPattern, maximumDistance: number): QueryCursor;
   close(): void;
+  [Symbol.dispose](): void;
+}
+
+/** TinyLFU/SIEVE policy counters and current bounded residency. */
+export interface QueryCacheStats {
+  readonly requests: bigint;
+  readonly hits: bigint;
+  readonly misses: bigint;
+  readonly admissions: bigint;
+  readonly rejections: bigint;
+  readonly evictions: bigint;
+  readonly residentEntries: number;
+  readonly residentWeight: number;
+}
+/** Hard bounds applied independently to each result-order cache shard. */
+export interface QueryCacheOptions {
+  readonly maximumEntries?: number;
+  readonly maximumWeight?: number;
+}
+/** Exclusive, synchronization-free cache of complete snapshot query results. */
+export interface QueryCache {
+  readonly stats: QueryCacheStats;
+  query(input: string, maximumDistance: number, order?: QueryOrder): QueryCursor;
+  query(input: Uint8Array | BigUint64Array, maximumDistance: number): QueryCursor;
+  clear(): this;
+  resetStats(): this;
+  close(): void;
+  [Symbol.dispose](): void;
 }
 
 export interface LibdictensteinNamespace {
@@ -86,6 +114,7 @@ export interface LibdictensteinNamespace {
 export interface LiblevenshteinNamespace {
   readonly runtimeIdentity: RuntimeIdentity;
   transducer(dictionary: DictionaryResource, algorithm?: Algorithm): Transducer;
+  queryCache(transducer: Transducer, options?: QueryCacheOptions): QueryCache;
   phoneticPattern(source: string): PhoneticPattern;
   llrePattern(source: string): PhoneticPattern;
   phoneticRules(source: string): PhoneticRuleSet;

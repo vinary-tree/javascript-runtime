@@ -45,6 +45,20 @@ for (const { term, distance, id } of matches) {
 }
 ```
 
+Repeated searches can opt into the bounded, exact TinyLFU/SIEVE result cache:
+
+```js
+using transducer = liblevenshtein.transducer(dictionary);
+using cache = liblevenshtein.queryCache(transducer, { maximumEntries: 512 });
+using matches = cache.query("speling", 2, "distance-then-term");
+console.log([...matches]);
+```
+
+The cache invalidates residency when the dictionary revision changes. Policy
+approximation affects only which exact results remain resident, never result
+correctness. Create one cache per Worker; cache objects are deliberately
+exclusive and synchronization-free.
+
 `size`, `set`, `get`, `has`, `delete`, `entries`, `keys`, `values`,
 `forEach`, and `[Symbol.iterator]` mirror familiar collection behavior.
 Ordinary iteration materializes one host-owned immutable revision, so early

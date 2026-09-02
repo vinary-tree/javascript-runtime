@@ -201,6 +201,61 @@ test("native byte and u64 domains remain typed and streaming", () => {
   tokens.close();
 });
 
+test("native bounded query cache is exact, revision-aware, and domain-generic", () => {
+  const dictionary = libdictenstein.dynamicDawg();
+  dictionary.set("cat", 1n).set("cot", 2n);
+  const transducer = liblevenshtein.transducer(dictionary);
+  const cache = liblevenshtein.queryCache(transducer, {
+    maximumEntries: 4,
+    maximumWeight: 4096,
+  });
+  assert.deepEqual(collect(cache.query("cat", 1, "distance-then-term")), [
+    ["cat", 0, 1n], ["cot", 1, 2n],
+  ]);
+  collect(cache.query("cat", 1, "distance-then-term"));
+  assert.equal(cache.stats.requests, 2n);
+  assert.equal(cache.stats.hits, 1n);
+  dictionary.delete("cot");
+  transducer.close();
+  dictionary.close();
+  assert.deepEqual(collect(cache.query("cat", 1, "distance-then-term")), [
+    ["cat", 0, 1n],
+  ]);
+  assert.equal(cache.stats.misses, 2n);
+  cache.clear().resetStats();
+  assert.equal(cache.stats.residentEntries, 0);
+  assert.equal(cache.stats.requests, 0n);
+  cache.close();
+  cache.close();
+  assert.throws(() => cache.stats, /closed/);
+  assert.throws(
+    () => liblevenshtein.queryCache({}, {}),
+    /transducer from this runtime/,
+  );
+
+  const bytes = libdictenstein.dynamicDawg("byte");
+  bytes.set(new Uint8Array([99, 97, 116]), 3n);
+  const byteTransducer = liblevenshtein.transducer(bytes);
+  const byteCache = liblevenshtein.queryCache(byteTransducer);
+  assert.deepEqual(collect(byteCache.query(new Uint8Array([99, 117, 116]), 1)), [
+    [new Uint8Array([99, 97, 116]), 1, 3n],
+  ]);
+  byteCache.close();
+  byteTransducer.close();
+  bytes.close();
+
+  const tokens = libdictenstein.dynamicDawg("u64");
+  tokens.set(new BigUint64Array([1n, 2n]), 4n);
+  const tokenTransducer = liblevenshtein.transducer(tokens);
+  const tokenCache = liblevenshtein.queryCache(tokenTransducer);
+  assert.deepEqual(collect(tokenCache.query(new BigUint64Array([1n, 3n]), 1)), [
+    [new BigUint64Array([1n, 2n]), 1, 4n],
+  ]);
+  tokenCache.close();
+  tokenTransducer.close();
+  tokens.close();
+});
+
 test("native thresholded distances mirror their unthresholded siblings", () => {
   // Early-exit semantics: a plain number whenever the true distance fits the
   // maximum (including exactly at it), undefined once the bound is exceeded.
@@ -321,6 +376,7 @@ test("every index.d.ts member exists on the native path", async () => {
   dictionary.put("cat", 1n);
   const entryCursor = dictionary.streamEntries();
   const transducer = liblevenshtein.transducer(dictionary);
+  const cache = liblevenshtein.queryCache(transducer, { maximumEntries: 2 });
   const cursor = transducer.query("cat", 1);
   const pattern = liblevenshtein.phoneticPattern("c[ao]t");
   const rules = liblevenshtein.phoneticRules("english-orthography");
@@ -338,6 +394,7 @@ test("every index.d.ts member exists on the native path", async () => {
     ["PhoneticPattern", pattern],
     ["PhoneticRuleSet", rules],
     ["Transducer", transducer],
+    ["QueryCache", cache],
     ["Wfst", wfst],
     ["WfstBuilder", builder],
     ["LibdictensteinNamespace", libdictenstein],
@@ -371,6 +428,7 @@ test("every index.d.ts member exists on the native path", async () => {
   } finally {
     entryCursor.close();
     cursor.close();
+    cache.close();
     wfst.close();
     builder.close();
     transducer.close();

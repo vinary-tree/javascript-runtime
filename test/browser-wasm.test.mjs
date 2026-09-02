@@ -96,6 +96,58 @@ test("u64 dictionaries and batch reduction remain streaming", () => {
   dictionary.close();
 });
 
+test("browser-WASM exposes exact bounded cache hits and revision invalidation", () => {
+  const dictionary = libdictenstein.dynamicDawg();
+  dictionary.set("cat", 1n).set("cot", 2n);
+  const transducer = liblevenshtein.transducer(dictionary);
+  const cache = liblevenshtein.queryCache(transducer, {
+    maximumEntries: 4,
+    maximumWeight: 4096,
+  });
+  assert.deepEqual(collect(cache.query("cat", 1, "distance-then-term")), [
+    { term: "cat", distance: 0, id: 1n },
+    { term: "cot", distance: 1, id: 2n },
+  ]);
+  collect(cache.query("cat", 1, "distance-then-term"));
+  assert.equal(cache.stats.hits, 1n);
+  dictionary.delete("cot");
+  transducer.close();
+  dictionary.close();
+  assert.deepEqual(collect(cache.query("cat", 1, "distance-then-term")), [
+    { term: "cat", distance: 0, id: 1n },
+  ]);
+  cache.clear().resetStats();
+  assert.equal(cache.stats.residentEntries, 0);
+  assert.equal(cache.stats.requests, 0n);
+  cache.close();
+
+  const bytes = libdictenstein.dynamicDawg("byte");
+  bytes.set(new Uint8Array([99, 97, 116]), 3n);
+  const byteTransducer = liblevenshtein.transducer(bytes);
+  const byteCache = liblevenshtein.queryCache(byteTransducer);
+  assert.deepEqual(collect(byteCache.query(new Uint8Array([99, 117, 116]), 1)), [
+    { term: new Uint8Array([99, 97, 116]), distance: 1, id: 3n },
+  ]);
+  assert.throws(
+    () => byteCache.query(new Uint8Array([99, 117, 116]), 1, "distance-then-term"),
+    /ordered streaming is unsupported for Byte/,
+  );
+  byteCache.close();
+  byteTransducer.close();
+  bytes.close();
+
+  const tokens = libdictenstein.dynamicDawg("u64");
+  tokens.set(new BigUint64Array([1n, 2n]), 4n);
+  const tokenTransducer = liblevenshtein.transducer(tokens);
+  const tokenCache = liblevenshtein.queryCache(tokenTransducer);
+  assert.deepEqual(collect(tokenCache.query(new BigUint64Array([1n, 3n]), 1)), [
+    { term: new BigUint64Array([1n, 2n]), distance: 1, id: 4n },
+  ]);
+  tokenCache.close();
+  tokenTransducer.close();
+  tokens.close();
+});
+
 test("browser dictionaries expose host-owned Map collection snapshots", () => {
   const dictionary = libdictenstein.dynamicDawg();
   dictionary.set("cat", 1n).set("caff", null).set("dog", 3n);

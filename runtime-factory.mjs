@@ -315,20 +315,56 @@ function query(transducer, input, maximumDistance, order = "traversal") {
   throw new TypeError("query must be a string, Uint8Array, BigUint64Array, or PhoneticPattern");
 }
 
+function cacheLimit(value, fallback, name) {
+  const selected = value ?? fallback;
+  if (!Number.isSafeInteger(selected) || selected < 0 || selected > 0xffff_ffff) {
+    throw new RangeError(`${name} must be an integer from 0 through 4294967295`);
+  }
+  return selected;
+}
+
+function installQueryCacheProtocol(raw) {
+  if (!raw.QueryCache || raw.QueryCache.prototype.query) return;
+  const prototype = raw.QueryCache.prototype;
+  const rawClear = prototype.clear;
+  const rawResetStats = prototype.resetStats;
+  Object.defineProperties(prototype, {
+    query: {
+      value(input, maximumDistance, order = "traversal") {
+        if (typeof input === "string") return this.queryText(input, maximumDistance, order);
+        if (input instanceof BigUint64Array) return this.queryU64(input, maximumDistance, order);
+        if (input instanceof Uint8Array) return this.queryBytes(input, maximumDistance, order);
+        throw new TypeError("cached query requires text, Uint8Array, or BigUint64Array");
+      },
+    },
+    clear: {
+      value() { rawClear.call(this); return this; },
+    },
+    resetStats: {
+      value() { rawResetStats.call(this); return this; },
+    },
+    [Symbol.dispose]: { value() { this.close(); } },
+  });
+}
+
 /** Build all public project namespaces over exactly one initialized runtime. */
 export function createRuntime(raw) {
   const runtimeIdentity = Object.freeze({ implementation: "vinary-tree-wasm-v1" });
   installCursorProtocol(raw);
   installDictionaryProtocol(raw, runtimeIdentity);
+  installQueryCacheProtocol(raw);
 
   Object.defineProperty(raw.Transducer, "__phoneticPatternClass", {
     value: raw.PhoneticPattern,
   });
   if (!raw.Transducer.prototype.query) {
-    Object.defineProperty(raw.Transducer.prototype, "query", {
-      value(input, maximumDistance, order) {
-        return query(this, input, maximumDistance, order);
+    Object.defineProperties(raw.Transducer.prototype, {
+      query: {
+        value(input, maximumDistance, order) {
+          return query(this, input, maximumDistance, order);
+        },
       },
+      [Symbol.dispose]: { value() { this.close(); } },
     });
   }
 
@@ -358,6 +394,19 @@ export function createRuntime(raw) {
     runtimeIdentity,
     transducer(dictionary, algorithm = "standard") {
       return new raw.Transducer(requireDictionary(dictionary, runtimeIdentity), algorithm);
+    },
+    queryCache(transducer, options = {}) {
+      if (!(transducer instanceof raw.Transducer)) {
+        throw new TypeError("query cache requires a transducer from this runtime");
+      }
+      if (options === null || typeof options !== "object") {
+        throw new TypeError("query cache options must be an object");
+      }
+      return new raw.QueryCache(
+        transducer,
+        cacheLimit(options.maximumEntries, 1024, "maximumEntries"),
+        cacheLimit(options.maximumWeight, 64 * 1024 * 1024, "maximumWeight"),
+      );
     },
     phoneticPattern(source) {
       return raw.PhoneticPattern.compileRegex(source);
