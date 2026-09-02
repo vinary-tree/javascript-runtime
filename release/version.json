@@ -1,14 +1,18 @@
 {
   "schemaVersion": 1,
   "component": "javascript-runtime",
-  "canonical": "4.0.0-rc.5",
+  "canonical": "4.0.0-rc.6",
+  "metadata": {
+    "summary": "One runtime for Vinary Tree dictionaries and automata on Node, WASM, and WASI",
+    "description": "A single-instance native, WebAssembly, and WASI runtime that lets Vinary Tree JavaScript packages safely share live dictionaries and weighted automata."
+  },
   "coordinates": {
     "npmPackage": "@vinary-tree/javascript-runtime",
     "npmPropertyTestPackage": "@vinary-tree/javascript-runtime-property-tests"
   },
-  "npm": "4.0.0-rc.5",
+  "npm": "4.0.0-rc.6",
   "distTag": "next",
-  "sourceTag": "v4.0.0-rc.5",
+  "sourceTag": "v4.0.0-rc.6",
   "nativePrebuilds": [
     "linux-x64",
     "linux-arm64",
@@ -18,20 +22,20 @@
     "win32-arm64"
   ],
   "dependencies": {
-    "duallity": "4.0.0-rc.5",
+    "duallity": "4.0.0-rc.6",
     "llattice": "0.1.0",
-    "libdictenstein": "4.0.0-rc.5",
-    "liblevenshtein": "4.0.0-rc.5",
-    "lling-llang": "4.0.0-rc.5",
-    "vinary-tree-interop": "4.0.0-rc.5",
-    "@vinary-tree/vinary-tree-interop": "4.0.0-rc.5"
+    "libdictenstein": "4.0.0-rc.6",
+    "liblevenshtein": "4.0.0-rc.6",
+    "lling-llang": "4.0.0-rc.6",
+    "vinary-tree-interop": "4.0.0-rc.6",
+    "@vinary-tree/vinary-tree-interop": "4.0.0-rc.6"
   },
   "sourceRefs": {
-    "vinary-tree-interop": "v4.0.0-rc.5",
+    "vinary-tree-interop": "v4.0.0-rc.6",
     "llattice": "v0.1.0",
-    "libdictenstein": "v4.0.0-rc.5",
-    "liblevenshtein-rust": "v4.0.0-rc.5",
-    "lling-llang": "v4.0.0-rc.5",
-    "duallity": "v4.0.0-rc.5"
+    "libdictenstein": "v4.0.0-rc.6",
+    "liblevenshtein-rust": "v4.0.0-rc.6",
+    "lling-llang": "v4.0.0-rc.6",
+    "duallity": "v4.0.0-rc.6"
   }
 }

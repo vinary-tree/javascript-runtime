@@ -8,7 +8,7 @@ runtimes.
 
 | Release property | Value |
 |---|---|
-| Candidate | `4.0.0-rc.5` |
+| Candidate | `4.0.0-rc.6` |
 | npm dist-tag | `next` |
 | Node | 22.14 or newer |
 | Backends | Native N-API, browser WebAssembly, Node WASI |

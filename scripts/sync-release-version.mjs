@@ -9,6 +9,17 @@ const write = process.argv.includes("--write");
 if (!/^\d+\.\d+\.\d+-rc\.\d+$/.test(model.canonical)) {
   throw new Error(`canonical version is not a numbered RC: ${model.canonical}`);
 }
+const summary = model.metadata?.summary;
+const description = model.metadata?.description;
+if (typeof summary !== "string" || summary.length === 0 || summary.length > 80) {
+  throw new Error("release metadata summary must contain 1 through 80 characters");
+}
+if (summary.endsWith(".")) {
+  throw new Error("release metadata summary must not end with a period");
+}
+if (typeof description !== "string" || !description.endsWith(".")) {
+  throw new Error("release metadata description must be non-empty and end with a period");
+}
 const npmPackage = model.coordinates?.npmPackage;
 const npmPropertyTestPackage = model.coordinates?.npmPropertyTestPackage;
 const legacyInteropPackage = ["@vinary-tree", "interop"].join("/");
@@ -68,6 +79,7 @@ const packageJson = updateJson("package.json", (value) => {
   if (write) {
     value.name = npmPackage;
     value.version = model.npm;
+    value.description = description;
     delete value.dependencies[legacyInteropPackage];
     value.dependencies["@vinary-tree/vinary-tree-interop"] =
       model.dependencies["@vinary-tree/vinary-tree-interop"];
@@ -93,6 +105,7 @@ const cargoPath = join(root, "rust", "Cargo.toml");
 let cargo = readFileSync(cargoPath, "utf8");
 if (write) {
   cargo = cargo.replace(/^version = "[^"]+"/m, `version = "${model.canonical}"`);
+  cargo = cargo.replace(/^description = "[^"]+"/m, `description = "${description}"`);
   for (const dependency of ["duallity", "libdictenstein", "liblevenshtein", "lling-llang"]) {
     const escaped = dependency.replace("-", "\\-");
     cargo = cargo.replace(
@@ -152,6 +165,7 @@ for (const marker of [
 }
 expect("npm package", packageJson.name, npmPackage);
 expect("npm", packageJson.version, model.npm);
+expect("npm description", packageJson.description, description);
 expect(
   "npm interop",
   packageJson.dependencies["@vinary-tree/vinary-tree-interop"],
@@ -166,6 +180,7 @@ expect("property lock", propertyLock.version, model.canonical);
 expect("property lock root name", propertyLock.packages[""].name, npmPropertyTestPackage);
 expect("property lock root", propertyLock.packages[""].version, model.canonical);
 expect("Rust package", cargo.match(/^version = "([^"]+)"/m)?.[1], model.canonical);
+expect("Rust description", cargo.match(/^description = "([^"]+)"/m)?.[1], description);
 for (const dependency of ["duallity", "libdictenstein", "liblevenshtein", "lling-llang"]) {
   const escaped = dependency.replace("-", "\\-");
   expect(

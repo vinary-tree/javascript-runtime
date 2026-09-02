@@ -1,7 +1,7 @@
 {
   "name": "@vinary-tree/javascript-runtime",
-  "version": "4.0.0-rc.5",
-  "description": "Single-instance JavaScript runtime for related Vinary Tree libraries",
+  "version": "4.0.0-rc.6",
+  "description": "A single-instance native, WebAssembly, and WASI runtime that lets Vinary Tree JavaScript packages safely share live dictionaries and weighted automata.",
   "author": {
     "name": "Dylon Edwards",
     "email": "dylon.devo@gmail.com"
@@ -17,7 +17,7 @@
     "node": ">=22.14"
   },
   "dependencies": {
-    "@vinary-tree/vinary-tree-interop": "4.0.0-rc.5"
+    "@vinary-tree/vinary-tree-interop": "4.0.0-rc.6"
   },
   "types": "./index.d.ts",
   "exports": {
