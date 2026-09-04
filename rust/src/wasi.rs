@@ -620,7 +620,10 @@ fn capture_wfst(handle: u32) -> Result<CapturedWfstResource, String> {
     };
     unsafe {
         let _ = wfst_table(resource)?;
-        (*resource.vtable).retain.unwrap()(resource.context);
+        let retain = (*resource.vtable)
+            .retain
+            .ok_or("resource has no retain callback")?;
+        retain(resource.context);
     }
     Ok(CapturedWfstResource(resource))
 }
