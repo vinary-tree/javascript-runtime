@@ -1,5 +1,7 @@
 import {
+  assertLatticeProvider,
   assertScalarWfstProvider,
+  normalizeLatticeProviderOptions,
   normalizeScalarWfstProviderOptions,
 } from "@vinary-tree/vinary-tree-interop";
 
@@ -33,6 +35,19 @@ function requireWfst(wfst, runtimeIdentity) {
     throw new TypeError("WFST belongs to a different Vinary Tree runtime");
   }
   return wfst;
+}
+
+function requireLattice(lattice, runtimeIdentity, domainId = undefined) {
+  if (lattice?.interfaceId !== "vt.lattice.val.1") {
+    throw new TypeError("resource does not implement vt.lattice.val.1");
+  }
+  if (lattice.runtimeIdentity !== runtimeIdentity) {
+    throw new TypeError("lattice belongs to a different Vinary Tree runtime");
+  }
+  if (domainId !== undefined && lattice.domainId !== domainId) {
+    throw new TypeError("lattice belongs to a different semantic domain");
+  }
+  return lattice;
 }
 
 function installCursorProtocol(raw) {
@@ -338,6 +353,20 @@ function hostWfstOptions(options) {
   return [unitDomain, weightDomain, lazy, acyclic];
 }
 
+function hostLattice(provider, options) {
+  assertLatticeProvider(provider);
+  const { domainId } = normalizeLatticeProviderOptions(options);
+  return [provider, domainId];
+}
+
+function latticeHandles(values, runtimeIdentity, domainId, maximum) {
+  if (!Array.isArray(values) || values.length > maximum) {
+    throw new TypeError(`lattice values must be an array of at most ${maximum} entries`);
+  }
+  return Uint32Array.from(values, (value) =>
+    requireLattice(value, runtimeIdentity, domainId).registryHandle());
+}
+
 function installQueryCacheProtocol(raw) {
   if (!raw.QueryCache || raw.QueryCache.prototype.query) return;
   const prototype = raw.QueryCache.prototype;
@@ -388,6 +417,32 @@ export function createRuntime(raw) {
     runtimeIdentity: { value: runtimeIdentity },
     [Symbol.dispose]: { value() { this.close(); } },
   });
+
+  if (raw.Lattice && !raw.Lattice.prototype.joinMany) {
+    const rawJoinMany = raw.Lattice.prototype.joinManyHandles;
+    const rawMeetMany = raw.Lattice.prototype.meetManyHandles;
+    Object.defineProperties(raw.Lattice.prototype, {
+      interfaceId: { value: "vt.lattice.val.1" },
+      runtimeIdentity: { value: runtimeIdentity },
+      joinMany: {
+        value(others) {
+          return rawJoinMany.call(
+            this,
+            latticeHandles(others, runtimeIdentity, this.domainId, DEFAULT_BATCH_SIZE),
+          );
+        },
+      },
+      meetMany: {
+        value(others) {
+          return rawMeetMany.call(
+            this,
+            latticeHandles(others, runtimeIdentity, this.domainId, DEFAULT_BATCH_SIZE),
+          );
+        },
+      },
+      [Symbol.dispose]: { value() { this.close(); } },
+    });
+  }
 
   const libdictenstein = Object.freeze({
     runtimeIdentity,
@@ -444,6 +499,16 @@ export function createRuntime(raw) {
   const llingLlang = Object.freeze({
     runtimeIdentity,
     vectorWfst() { return new raw.WfstBuilder(); },
+    lattice(provider, options) {
+      const [value, domainId] = hostLattice(provider, options);
+      return raw.createHostLattice(value, domainId);
+    },
+    validateLatticeLaws(values) {
+      const domainId = values?.[0]?.domainId;
+      raw.validateLatticeLawHandles(
+        latticeHandles(values, runtimeIdentity, domainId, 16),
+      );
+    },
     scalarWfst(provider, options = {}) {
       const [unitDomain, weightDomain, lazy, acyclic] = hostWfstOptions(options);
       return raw.createHostWfst(

@@ -1,7 +1,9 @@
 import { readFile } from "node:fs/promises";
 import { WASI } from "node:wasi";
 import {
+  assertLatticeProvider,
   assertScalarWfstProvider,
+  normalizeLatticeProviderOptions,
   normalizeScalarWfstProviderOptions,
 } from "@vinary-tree/vinary-tree-interop";
 
@@ -45,12 +47,22 @@ const HOST_LIMIT_EXCEEDED = 7;
 const HOST_PROVIDER_ERROR = 8;
 const HOST_INDEX_MASK = 0xffff;
 const HOST_MAX_COMPONENT = 0xfffe;
+const HOST_LATTICE_THREAD_BOUND = 1n;
+const HOST_LATTICE_STABLE_BYTES = 4n;
+const HOST_LATTICE_BATCH = 8n;
+const HOST_LATTICE_JOIN = 1;
+const HOST_LATTICE_MEET = 2;
+const HOST_LATTICE_STABLE = 1;
+const HOST_LATTICE_DIAGNOSTIC = 2;
+const MAXIMUM_PROVIDER_BYTES = 16 * 1024 * 1024;
+const MAXIMUM_LATTICE_BATCH = 256;
+const MAXIMUM_LAW_SAMPLES = 16;
 
 class GenerationalProviderTable {
   #slots = [];
   #free = [];
 
-  insert(provider, unitDomain) {
+  insert(provider, metadata) {
     let index;
     if (this.#free.length > 0) {
       index = this.#free.pop();
@@ -59,11 +71,11 @@ class GenerationalProviderTable {
         throw new RangeError("WASI host provider table is full");
       }
       index = this.#slots.length;
-      this.#slots.push({ generation: 1, provider: null, unitDomain: 0, active: false });
+      this.#slots.push({ generation: 1, provider: null, metadata: null, active: false });
     }
     const slot = this.#slots[index];
     slot.provider = provider;
-    slot.unitDomain = unitDomain;
+    slot.metadata = metadata;
     slot.active = false;
     return ((slot.generation << 16) | (index + 1)) >>> 0;
   }
@@ -73,20 +85,26 @@ class GenerationalProviderTable {
     if (selected === null) return;
     const { index, slot } = selected;
     slot.provider = null;
-    slot.unitDomain = 0;
+    slot.metadata = null;
     slot.active = false;
     slot.generation = slot.generation === HOST_MAX_COMPONENT ? 1 : slot.generation + 1;
     this.#free.push(index);
   }
 
-  invoke(handle, operation) {
+  resolve(handle, expectedKind) {
     const selected = this.#lookup(handle);
-    if (selected === null) return HOST_CLOSED;
+    if (selected === null || selected.slot.metadata?.kind !== expectedKind) return null;
+    return selected.slot;
+  }
+
+  invoke(handle, expectedKind, operation) {
+    const selected = this.#lookup(handle);
+    if (selected === null || selected.slot.metadata?.kind !== expectedKind) return HOST_CLOSED;
     const { slot } = selected;
     if (slot.active) return HOST_PROVIDER_ERROR;
     slot.active = true;
     try {
-      operation(slot.provider, slot.unitDomain);
+      operation(slot.provider, slot.metadata);
       return HOST_OK;
     } catch {
       return HOST_PROVIDER_ERROR;
@@ -128,6 +146,19 @@ function hostWfstOptions(options) {
     unitDomainName: unitDomain,
     weightDomainName: weightDomain,
   };
+}
+
+function latticeProviderFlags(provider) {
+  let flags = HOST_LATTICE_THREAD_BOUND;
+  if (typeof provider.stableBytes === "function") flags |= HOST_LATTICE_STABLE_BYTES;
+  if (typeof provider.joinMany === "function") flags |= HOST_LATTICE_BATCH;
+  return flags;
+}
+
+function hostLatticeOptions(provider, options) {
+  assertLatticeProvider(provider);
+  const { domainId } = normalizeLatticeProviderOptions(options);
+  return { provider, domainId, flags: latticeProviderFlags(provider) };
 }
 
 function exactU64(value, name) {
@@ -188,18 +219,47 @@ export async function createWasiRuntime({
   const providers = new GenerationalProviderTable();
   let ffi;
   const memoryView = () => new DataView(ffi.memory.buffer);
+  const latticeOperand = (handle, domainId) => {
+    const slot = providers.resolve(handle, "lattice");
+    if (slot === null) throw new Error("stale or foreign WASI lattice handle");
+    if (slot.metadata.domainId !== domainId) {
+      throw new TypeError("lattice operands belong to different semantic domains");
+    }
+    return Object.freeze({ domainId, localValue: slot.provider, stableBytes: null });
+  };
+  const writeLatticeResult = (provider, domainId, handlePointer, flagsPointer) => {
+    assertLatticeProvider(provider);
+    const flags = latticeProviderFlags(provider);
+    const handle = providers.insert(provider, { kind: "lattice", domainId, flags });
+    try {
+      const memory = memoryView();
+      memory.setUint32(handlePointer, handle, true);
+      memory.setBigUint64(flagsPointer, flags, true);
+    } catch (error) {
+      providers.release(handle);
+      throw error;
+    }
+  };
+  const latticeHandleArray = (pointer, count, domainId) => {
+    if (count > MAXIMUM_LATTICE_BATCH) throw new RangeError("lattice batch exceeds 256 values");
+    const memory = memoryView();
+    return Array.from(
+      { length: count },
+      (_value, index) => latticeOperand(memory.getUint32(pointer + index * 4, true), domainId),
+    );
+  };
   const host = {
     host_provider_release(handle) {
       providers.release(handle);
     },
     host_provider_start(handle, outputPointer) {
-      return providers.invoke(handle, (provider) => {
+      return providers.invoke(handle, "wfst", (provider) => {
         const state = exactU64(provider.startState(), "WFST start state");
         memoryView().setBigUint64(outputPointer, state, true);
       });
     },
     host_provider_num_states(handle, countPointer, knownPointer) {
-      return providers.invoke(handle, (provider) => {
+      return providers.invoke(handle, "wfst", (provider) => {
         const count = provider.stateCount();
         const memory = memoryView();
         if (count === null) {
@@ -214,7 +274,7 @@ export async function createWasiRuntime({
       });
     },
     host_provider_state_info(handle, state, validPointer, finalPointer, weightPointer) {
-      return providers.invoke(handle, (provider) => {
+      return providers.invoke(handle, "wfst", (provider) => {
         const value = provider.stateInfo(state);
         if (value === null || typeof value !== "object" || Array.isArray(value)) {
           throw new TypeError("WFST stateInfo must return an object");
@@ -241,7 +301,7 @@ export async function createWasiRuntime({
       writtenPointer,
       totalPointer,
     ) {
-      return providers.invoke(handle, (provider, unitDomain) => {
+      return providers.invoke(handle, "wfst", (provider, { unitDomain }) => {
         let values;
         let total;
         if (provider.stateArcsPage === undefined) {
@@ -282,6 +342,79 @@ export async function createWasiRuntime({
         }
         memory.setUint32(writtenPointer, arcs.length, true);
         memory.setUint32(totalPointer, total, true);
+      });
+    },
+    host_lattice_binary(receiver, other, operation, handlePointer, flagsPointer) {
+      return providers.invoke(receiver, "lattice", (provider, { domainId }) => {
+        const method = operation === HOST_LATTICE_JOIN
+          ? "join"
+          : operation === HOST_LATTICE_MEET ? "meet" : null;
+        if (method === null) throw new TypeError("unknown lattice binary operation");
+        writeLatticeResult(
+          provider[method](latticeOperand(other, domainId)),
+          domainId,
+          handlePointer,
+          flagsPointer,
+        );
+      });
+    },
+    host_lattice_equal(receiver, other, equalPointer) {
+      return providers.invoke(receiver, "lattice", (provider, { domainId }) => {
+        const equal = provider.equal(latticeOperand(other, domainId));
+        if (typeof equal !== "boolean") throw new TypeError("lattice equal must return a boolean");
+        memoryView().setUint8(equalPointer, Number(equal));
+      });
+    },
+    host_lattice_bytes(handle, operation, outputPointer, capacity, writtenPointer, requiredPointer) {
+      return providers.invoke(handle, "lattice", (provider) => {
+        let value;
+        if (operation === HOST_LATTICE_STABLE) {
+          value = provider.stableBytes();
+          if (!(value instanceof Uint8Array)) {
+            throw new TypeError("lattice stableBytes must return Uint8Array");
+          }
+        } else if (operation === HOST_LATTICE_DIAGNOSTIC) {
+          const diagnostic = provider.diagnostic();
+          if (typeof diagnostic !== "string") {
+            throw new TypeError("lattice diagnostic must return a string");
+          }
+          value = encoder.encode(diagnostic);
+        } else {
+          throw new TypeError("unknown lattice byte operation");
+        }
+        if (value.byteLength > MAXIMUM_PROVIDER_BYTES) {
+          throw new RangeError("lattice provider bytes exceed the defensive limit");
+        }
+        const count = Math.min(capacity, value.byteLength);
+        if (count !== 0) {
+          new Uint8Array(ffi.memory.buffer).set(value.subarray(0, count), outputPointer);
+        }
+        const memory = memoryView();
+        memory.setUint32(writtenPointer, count, true);
+        memory.setUint32(requiredPointer, value.byteLength, true);
+      });
+    },
+    host_lattice_many(
+      receiver,
+      othersPointer,
+      count,
+      operation,
+      handlePointer,
+      flagsPointer,
+    ) {
+      return providers.invoke(receiver, "lattice", (provider, { domainId }) => {
+        const method = operation === HOST_LATTICE_JOIN
+          ? "joinMany"
+          : operation === HOST_LATTICE_MEET ? "meetMany" : null;
+        if (method === null || typeof provider[method] !== "function") {
+          throw new TypeError("unknown or unavailable lattice batch operation");
+        }
+        writeLatticeResult(
+          provider[method](latticeHandleArray(othersPointer, count, domainId)),
+          domainId,
+          handlePointer,
+          flagsPointer,
+        );
       });
     },
   };
@@ -333,6 +466,26 @@ export async function createWasiRuntime({
       throw new RangeError(`${name} must be an integer from 0 through 4294967295`);
     }
     return selected;
+  }
+  function requireLattice(value, domainId = undefined) {
+    if (value?.interfaceId !== "vt.lattice.val.1" || value.runtimeIdentity !== runtimeIdentity) {
+      throw new TypeError("lattice belongs to a different Vinary Tree runtime");
+    }
+    if (domainId !== undefined && value.domainId !== domainId) {
+      throw new TypeError("lattice belongs to a different semantic domain");
+    }
+    return value;
+  }
+  function withLatticeHandles(values, maximum, domainId, operation) {
+    if (!Array.isArray(values) || values.length > maximum) {
+      throw new TypeError(`lattice values must be an array of at most ${maximum} entries`);
+    }
+    const encoded = new Uint8Array(values.length * 4);
+    const data = new DataView(encoded.buffer);
+    values.forEach((value, index) => {
+      data.setUint32(index * 4, requireLattice(value, domainId)._handle, true);
+    });
+    return withBytes(encoded, (pointer) => operation(pointer, values.length));
   }
 
   class Dictionary {
@@ -847,6 +1000,59 @@ export async function createWasiRuntime({
     [Symbol.dispose]() { this.close(); }
   }
 
+  class Lattice {
+    #handle;
+    constructor(handle, domainId) {
+      this.#handle = failure(handle);
+      Object.defineProperties(this, {
+        interfaceId: { value: "vt.lattice.val.1", enumerable: true },
+        runtimeIdentity: { value: runtimeIdentity, enumerable: true },
+        domainId: { value: domainId, enumerable: true },
+      });
+    }
+    get _handle() {
+      if (this.#handle === 0) throw new Error("lattice value is closed");
+      return this.#handle;
+    }
+    join(other) {
+      requireLattice(other, this.domainId);
+      return new Lattice(ffi.vt_lattice_join(this._handle, other._handle), this.domainId);
+    }
+    meet(other) {
+      requireLattice(other, this.domainId);
+      return new Lattice(ffi.vt_lattice_meet(this._handle, other._handle), this.domainId);
+    }
+    equal(other) {
+      requireLattice(other, this.domainId);
+      return failure(ffi.vt_lattice_equal(this._handle, other._handle)) !== 0;
+    }
+    stableBytes() {
+      const length = failure(ffi.vt_lattice_stable_bytes(this._handle));
+      const pointer = failure(ffi.vt_lattice_bytes_pointer(this._handle));
+      return bytes().slice(pointer, pointer + length);
+    }
+    diagnostic() {
+      const length = failure(ffi.vt_lattice_diagnostic(this._handle));
+      const pointer = failure(ffi.vt_lattice_bytes_pointer(this._handle));
+      return decoder.decode(bytes().slice(pointer, pointer + length));
+    }
+    joinMany(others) {
+      return withLatticeHandles(others, MAXIMUM_LATTICE_BATCH, this.domainId, (pointer, count) =>
+        new Lattice(ffi.vt_lattice_join_many(this._handle, pointer, count), this.domainId));
+    }
+    meetMany(others) {
+      return withLatticeHandles(others, MAXIMUM_LATTICE_BATCH, this.domainId, (pointer, count) =>
+        new Lattice(ffi.vt_lattice_meet_many(this._handle, pointer, count), this.domainId));
+    }
+    close() {
+      if (this.#handle !== 0) {
+        ffi.vt_handle_close(this.#handle);
+        this.#handle = 0;
+      }
+    }
+    [Symbol.dispose]() { this.close(); }
+  }
+
   class WfstBuilder {
     #handle = failure(ffi.vt_wfst_builder_new());
     get _handle() {
@@ -918,10 +1124,34 @@ export async function createWasiRuntime({
   const llingLlang = Object.freeze({
     runtimeIdentity,
     vectorWfst() { return new WfstBuilder(); },
+    lattice(provider, options) {
+      const selected = hostLatticeOptions(provider, options);
+      const hostHandle = providers.insert(selected.provider, {
+        kind: "lattice",
+        domainId: selected.domainId,
+        flags: selected.flags,
+      });
+      const guestHandle = withBytes(selected.domainId, (pointer, length) =>
+        ffi.vt_host_lattice_new(hostHandle, pointer, length, selected.flags));
+      if ((guestHandle >>> 0) === FAILURE) {
+        providers.release(hostHandle);
+        failure(guestHandle);
+      }
+      return new Lattice(guestHandle, selected.domainId);
+    },
+    validateLatticeLaws(values) {
+      const domainId = values?.[0]?.domainId;
+      withLatticeHandles(values, MAXIMUM_LAW_SAMPLES, domainId, (pointer, count) => {
+        failure(ffi.vt_lattice_validate_laws(pointer, count));
+      });
+    },
     scalarWfst(provider, options = {}) {
       const validated = requireScalarWfstProvider(provider);
       const selected = hostWfstOptions(options);
-      const hostHandle = providers.insert(validated, selected.unitDomain);
+      const hostHandle = providers.insert(validated, {
+        kind: "wfst",
+        unitDomain: selected.unitDomain,
+      });
       const guestHandle = ffi.vt_host_wfst_new(
         hostHandle,
         selected.unitDomain,

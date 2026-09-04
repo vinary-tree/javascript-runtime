@@ -41,16 +41,19 @@ serialized.
 | Node WASI | Explicit linear-memory functions | WASI `.wasm` | Preopened filesystem access for persistent ARTrie |
 
 All backends expose the same dictionary collection conventions, streaming
-query cursors, scalar weighted finite-state transducers (WFSTs), edit-distance
-functions, and deterministic close operations. Backend-specific code may
-change marshalling, never observable query or snapshot semantics.
+query cursors, scalar weighted finite-state transducers (WFSTs), dynamic
+lattice values, edit-distance functions, and deterministic close operations.
+Backend-specific code may change marshalling, never observable algebra, query,
+or snapshot semantics.
 
-Host-defined JavaScript WFSTs use one semantic contract with three ownership
-strategies. Node-API holds a strong N-API reference and schedules off-thread
-cleanup through a per-resource thread-safe function. Browser WebAssembly roots
-the provider in a WebAssembly-owned context. WASI passes an index-plus-generation
-handle to imported functions and copies bounded pages through linear memory.
-Raw vtable pointers stay within their native or WebAssembly address space.
+Host-defined JavaScript WFSTs and lattice values use common semantic contracts
+with three ownership strategies. Node-API holds a strong N-API reference and
+schedules off-thread cleanup through a per-resource thread-safe function.
+Browser WebAssembly roots providers in WebAssembly-owned contexts and uses
+generational handles for facade batches. WASI passes index-plus-generation
+handles to imported functions and copies bounded pages or algebra payloads
+through linear memory. Raw vtable pointers stay within their native or
+WebAssembly address space.
 
 Before entering host code, the consumer captures one resource retain and drops
 the global WASI handle-table guard. Provider callbacks consequently run under

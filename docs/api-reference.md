@@ -403,7 +403,7 @@ The `LlingLlangNamespace` value is exported as `llingLlang`.
 |---|---|
 | `llingLlang.runtimeIdentity` | Identity required for input WFSTs. |
 | `llingLlang.vectorWfst()` | Create a mutable `WfstBuilder`. |
-| `llingLlang.lattice(provider, options)` | Root one immutable JavaScript/TypeScript `LatticeProvider` as a closeable native `Lattice`. |
+| `llingLlang.lattice(provider, options)` | Root one immutable JavaScript/TypeScript `LatticeProvider` as a closeable backend-local `Lattice`. |
 | `llingLlang.validateLatticeLaws(values)` | Try to falsify the lattice laws over one to sixteen same-domain representative values. |
 | `llingLlang.scalarWfst(provider, options?)` | Root a JavaScript/TypeScript `ScalarWfstProvider` as an immutable closeable WFST. |
 | `llingLlang.compose(first, second)` | Lazily compose two same-runtime `Wfst` resources. |
@@ -480,11 +480,11 @@ back to pairwise calls if a result renegotiates that capability.
 `Lattice.stableBytes` returns copied deterministic identity bytes when the
 provider implements the optional method. `Lattice.diagnostic` returns bounded
 human-readable text. `Lattice.close` and `Lattice[Symbol.dispose]` release the
-native retain idempotently. Callback exceptions become provider errors;
-recursive entry fails immediately through an atomic gate instead of blocking.
-The current executable lattice trampoline is available on the native N-API
-entrypoint. Browser WebAssembly and WASI lattice trampolines remain follow-up
-work; the scalar-WFST provider is already available on all three backends.
+backend retain idempotently. Callback exceptions become provider errors;
+recursive entry fails immediately through a nonblocking per-provider gate.
+Native N-API, browser WebAssembly, and WASI expose the same lattice surface.
+Browser and WASI carry only generational handles across their JavaScript
+boundary; raw vtable pointers remain within Rust linear memory.
 
 ### duallity
 
@@ -530,6 +530,13 @@ callbacks carry only the generational handle, state IDs, and bounded
 linear-memory buffers; raw Rust or JavaScript pointers never cross the
 boundary. Closing the last guest snapshot releases the table slot and advances
 its generation before reuse.
+
+`WasiRuntime.llingLlang.lattice` uses the same generational table with a
+distinct provider kind and a fixed 16-byte semantic domain. Binary and bounded
+batch operations pass eager JavaScript operands, operation results negotiate
+their own optional stable-byte and batch capabilities, and provider callbacks
+run only after the guest registry releases its lock. Stable bytes and
+diagnostics are copied through bounded linear-memory buffers.
 
 ## Lifecycle and ownership
 

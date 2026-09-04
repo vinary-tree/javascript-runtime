@@ -1,5 +1,7 @@
 //! Browser/static-WebAssembly exports.
 
+mod browser_lattice;
+
 use js_sys::{Array, BigInt, BigUint64Array, Function, JsString, Object, Reflect, Uint8Array};
 use libdictenstein::bindings::{
     dictionary_algebra, BindingAlgebraOperation, BindingEntries, BindingEntry, BindingTerm,
@@ -638,27 +640,29 @@ fn provider_weight_domain(value: &str) -> Result<VtWeightDomain, JsValue> {
     }
 }
 
-struct BrowserWfstProviderContext {
+struct BrowserProviderContext<Table> {
     retains: Cell<usize>,
     active: Cell<bool>,
     provider: JsValue,
-    table: VtWfstVTable,
+    table: Table,
 }
 
-struct ProviderCallLease(*mut BrowserWfstProviderContext);
+type BrowserWfstProviderContext = BrowserProviderContext<VtWfstVTable>;
 
-impl Drop for ProviderCallLease {
+struct ProviderCallLease<Table>(*mut BrowserProviderContext<Table>);
+
+impl<Table> Drop for ProviderCallLease<Table> {
     fn drop(&mut self) {
         unsafe {
             let context = &*self.0;
             context.active.set(false);
-            browser_wfst_release(self.0.cast());
+            browser_provider_release(self.0);
         }
     }
 }
 
-unsafe fn try_retain_browser_wfst(
-    context: *mut BrowserWfstProviderContext,
+unsafe fn try_retain_browser_provider<Table>(
+    context: *mut BrowserProviderContext<Table>,
 ) -> Result<(), VtStatus> {
     if context.is_null() {
         return Err(VtStatus::NullPointer);
@@ -669,14 +673,14 @@ unsafe fn try_retain_browser_wfst(
     Ok(())
 }
 
-unsafe fn with_browser_provider<T>(
+unsafe fn with_browser_provider<Table, T>(
     context: *mut c_void,
-    operation: impl FnOnce(&BrowserWfstProviderContext) -> Result<T, ()>,
+    operation: impl FnOnce(&BrowserProviderContext<Table>) -> Result<T, ()>,
 ) -> Result<T, VtStatus> {
-    let context = context.cast::<BrowserWfstProviderContext>();
-    try_retain_browser_wfst(context)?;
+    let context = context.cast::<BrowserProviderContext<Table>>();
+    try_retain_browser_provider(context)?;
     if (*context).active.replace(true) {
-        browser_wfst_release(context.cast());
+        browser_provider_release(context);
         return Err(VtStatus::ProviderError);
     }
     let lease = ProviderCallLease(context);
@@ -685,15 +689,18 @@ unsafe fn with_browser_provider<T>(
     result
 }
 
-fn provider_method(context: &BrowserWfstProviderContext, name: &str) -> Result<Function, ()> {
+fn provider_method<Table>(
+    context: &BrowserProviderContext<Table>,
+    name: &str,
+) -> Result<Function, ()> {
     Reflect::get(&context.provider, &JsValue::from_str(name))
         .map_err(|_| ())?
         .dyn_into::<Function>()
         .map_err(|_| ())
 }
 
-fn call_provider(
-    context: &BrowserWfstProviderContext,
+fn call_provider<Table>(
+    context: &BrowserProviderContext<Table>,
     name: &str,
     arguments: &[JsValue],
 ) -> Result<JsValue, ()> {
@@ -786,11 +793,14 @@ fn provider_arc_array(value: &JsValue, domain: VtUnitDomain) -> Result<Vec<VtWfs
 }
 
 unsafe extern "C" fn browser_wfst_retain(context: *mut c_void) {
-    let _ = try_retain_browser_wfst(context.cast());
+    let _ = try_retain_browser_provider(context.cast::<BrowserWfstProviderContext>());
 }
 
 unsafe extern "C" fn browser_wfst_release(context: *mut c_void) {
-    let context = context.cast::<BrowserWfstProviderContext>();
+    browser_provider_release(context.cast::<BrowserWfstProviderContext>());
+}
+
+unsafe fn browser_provider_release<Table>(context: *mut BrowserProviderContext<Table>) {
     if context.is_null() {
         return;
     }
@@ -831,7 +841,7 @@ unsafe extern "C" fn browser_wfst_snapshot(
     if out_snapshot.is_null() {
         return VtStatus::NullPointer.to_raw();
     }
-    if let Err(status) = try_retain_browser_wfst(context.cast()) {
+    if let Err(status) = try_retain_browser_provider(context.cast::<BrowserWfstProviderContext>()) {
         return status.to_raw();
     }
     out_snapshot.write(VtResource {
@@ -845,7 +855,7 @@ unsafe extern "C" fn browser_wfst_start(context: *mut c_void, out_state: *mut u6
     if out_state.is_null() {
         return VtStatus::NullPointer.to_raw();
     }
-    match with_browser_provider(context, |provider| {
+    match with_browser_provider::<VtWfstVTable, _>(context, |provider| {
         exact_u64(&call_provider(provider, "startState", &[])?)
     }) {
         Ok(state) => {
@@ -864,7 +874,7 @@ unsafe extern "C" fn browser_wfst_num_states(
     if out_count.is_null() || out_known.is_null() {
         return VtStatus::NullPointer.to_raw();
     }
-    match with_browser_provider(context, |provider| {
+    match with_browser_provider::<VtWfstVTable, _>(context, |provider| {
         let value = call_provider(provider, "stateCount", &[])?;
         if value.is_null() {
             Ok(None)
@@ -891,7 +901,7 @@ unsafe extern "C" fn browser_wfst_state_info(
     if out_valid.is_null() || out_is_final.is_null() || out_final_weight.is_null() {
         return VtStatus::NullPointer.to_raw();
     }
-    match with_browser_provider(context, |provider| {
+    match with_browser_provider::<VtWfstVTable, _>(context, |provider| {
         let value = call_provider(provider, "stateInfo", &[BigInt::from(state).into()])?;
         if !value.is_object() || value.is_null() || Array::is_array(&value) {
             return Err(());
@@ -926,7 +936,7 @@ unsafe extern "C" fn browser_wfst_state_arcs(
     if out_written.is_null() || out_total.is_null() || (capacity != 0 && out_arcs.is_null()) {
         return VtStatus::NullPointer.to_raw();
     }
-    match with_browser_provider(context, |provider| {
+    match with_browser_provider::<VtWfstVTable, _>(context, |provider| {
         let paged = Reflect::get(&provider.provider, &JsValue::from_str("stateArcsPage"))
             .map_err(|_| ())?;
         let (arcs, total) = if paged.is_undefined() {

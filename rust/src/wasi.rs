@@ -1,5 +1,7 @@
 //! Compact linear-memory ABI used by the Node WASI facade.
 
+mod wasi_lattice;
+
 use libdictenstein::bindings::{
     dictionary_algebra, BindingAlgebraOperation, BindingEntries, BindingTerm, BindingUnitDomain,
     BindingValueMerge, DynamicDawgBinding, OwnedDictionaryResource, PersistentARTrieBinding,
@@ -359,6 +361,7 @@ enum Handle {
     EntryCursor(EntryCursor),
     WfstBuilder(VectorWfst<char, TropicalWeight>),
     Wfst(WasiWfst),
+    Lattice(wasi_lattice::WasiLattice),
 }
 
 struct Registry {

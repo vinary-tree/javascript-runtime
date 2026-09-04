@@ -53,5 +53,6 @@ The host-provider suites cover method and option validation, byte/Unicode/u64
 labels, bounded paging, totals that change between pages, pages that make no
 progress, NaN and wrong-type fields, thrown exceptions followed by recovery,
 recursive callback attempts, source close during an active call, retained
-composition snapshots, idempotent disposal, 4,096 WASI slot-reuse cycles, and
-10,000-cycle native memory steady state.
+composition snapshots, lattice domain isolation, batch-capability
+renegotiation, representative lattice-law probes, idempotent disposal, 4,096
+WASI slot-reuse cycles, and 10,000-cycle native memory steady state.

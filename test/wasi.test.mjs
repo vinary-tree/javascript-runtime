@@ -444,3 +444,143 @@ test("WASI host provider generations cannot alias recycled slots", async () => {
   }
   assert.equal(retiredCalls, 0, "recycled generational handles must never dispatch to retired providers");
 });
+
+const wasiLatticeDomain = "example.maximum1";
+
+function wasiMaximumOperand(operand) {
+  if (operand.domainId !== wasiLatticeDomain ||
+      operand.localValue === null || typeof operand.localValue.value !== "number") {
+    throw new TypeError("foreign maximum lattice value");
+  }
+  return operand.localValue.value;
+}
+
+function wasiBareMaximum(value) {
+  return {
+    value,
+    join(other) { return wasiBareMaximum(Math.max(value, wasiMaximumOperand(other))); },
+    meet(other) { return wasiBareMaximum(Math.min(value, wasiMaximumOperand(other))); },
+    equal(other) { return value === wasiMaximumOperand(other); },
+    diagnostic() { return `maximum(${value})`; },
+  };
+}
+
+class WasiMaximum {
+  constructor(value, calls = { batches: 0 }) {
+    this.value = value;
+    this.calls = calls;
+  }
+  join(other) {
+    return new WasiMaximum(Math.max(this.value, wasiMaximumOperand(other)), this.calls);
+  }
+  meet(other) {
+    return new WasiMaximum(Math.min(this.value, wasiMaximumOperand(other)), this.calls);
+  }
+  equal(other) { return this.value === wasiMaximumOperand(other); }
+  diagnostic() { return `maximum(${this.value})`; }
+  stableBytes() { return new TextEncoder().encode(String(this.value)); }
+  joinMany(others) {
+    this.calls.batches += 1;
+    return new WasiMaximum(
+      Math.max(this.value, ...others.map(wasiMaximumOperand)), this.calls,
+    );
+  }
+  meetMany(others) {
+    this.calls.batches += 1;
+    return new WasiMaximum(
+      Math.min(this.value, ...others.map(wasiMaximumOperand)), this.calls,
+    );
+  }
+}
+
+test("WASI lattice providers execute bounds, batches, laws, and disposal", async () => {
+  const runtime = await createWasiRuntime({ preopens: {} });
+  const calls = { batches: 0 };
+  const low = runtime.llingLlang.lattice(
+    new WasiMaximum(2, calls), { domainId: wasiLatticeDomain },
+  );
+  const middle = runtime.llingLlang.lattice(
+    new WasiMaximum(5, calls), { domainId: wasiLatticeDomain },
+  );
+  const high = runtime.llingLlang.lattice(
+    new WasiMaximum(9, calls), { domainId: wasiLatticeDomain },
+  );
+  const joined = low.join(middle);
+  const met = middle.meet(high);
+  const joinedMany = low.joinMany([middle, high]);
+  const metMany = high.meetMany([middle, low]);
+  try {
+    assert.equal(joined.diagnostic(), "maximum(5)");
+    assert.equal(met.diagnostic(), "maximum(5)");
+    assert.equal(joinedMany.diagnostic(), "maximum(9)");
+    assert.equal(metMany.diagnostic(), "maximum(2)");
+    assert.equal(joined.equal(middle), true);
+    assert.deepEqual([...high.stableBytes()], [...new TextEncoder().encode("9")]);
+    assert.ok(calls.batches >= 2);
+    runtime.llingLlang.validateLatticeLaws([low, middle, high]);
+  } finally {
+    for (const value of [joined, met, joinedMany, metMany, low, middle, high]) value.close();
+  }
+  assert.throws(() => low.diagnostic(), /closed/);
+  assert.doesNotThrow(() => low.close());
+});
+
+test("WASI lattice results renegotiate capabilities and outlive their sources", async () => {
+  const runtime = await createWasiRuntime({ preopens: {} });
+  const source = new WasiMaximum(3);
+  source.join = (other) => wasiBareMaximum(
+    Math.max(source.value, wasiMaximumOperand(other)),
+  );
+  const left = runtime.llingLlang.lattice(source, { domainId: wasiLatticeDomain });
+  const right = runtime.llingLlang.lattice(
+    new WasiMaximum(7), { domainId: wasiLatticeDomain },
+  );
+  const downgraded = left.join(right);
+  const folded = downgraded.joinMany([left, right]);
+  left.close();
+  right.close();
+  downgraded.close();
+  try {
+    assert.equal(folded.diagnostic(), "maximum(7)");
+    assert.throws(() => folded.stableBytes(), /does not provide stable bytes/i);
+  } finally {
+    folded.close();
+  }
+});
+
+test("WASI lattice providers reject malformed, foreign-domain, and reentrant calls", async () => {
+  const runtime = await createWasiRuntime({ preopens: {} });
+  assert.throws(() => runtime.llingLlang.lattice({}, { domainId: wasiLatticeDomain }), /missing join/);
+  assert.throws(
+    () => runtime.llingLlang.lattice(new WasiMaximum(1), { domainId: "short" }),
+    /16 printable/,
+  );
+  const local = runtime.llingLlang.lattice(
+    new WasiMaximum(1), { domainId: wasiLatticeDomain },
+  );
+  const foreign = runtime.llingLlang.lattice(
+    new WasiMaximum(2), { domainId: "example.maximum2" },
+  );
+  assert.throws(() => local.join(foreign), /different semantic domain/);
+  assert.throws(() => runtime.llingLlang.validateLatticeLaws([]), /one through sixteen/);
+  foreign.close();
+
+  const provider = new WasiMaximum(4);
+  const plainJoin = provider.join.bind(provider);
+  let reentrant;
+  provider.join = (other) => {
+    reentrant.diagnostic();
+    return plainJoin(other);
+  };
+  reentrant = runtime.llingLlang.lattice(provider, { domainId: wasiLatticeDomain });
+  assert.throws(() => reentrant.join(local), /ProviderError/);
+  provider.join = plainJoin;
+  const recovered = reentrant.join(local);
+  try {
+    assert.equal(recovered.diagnostic(), "maximum(4)");
+  } finally {
+    recovered.close();
+    reentrant.close();
+    local.close();
+  }
+});

@@ -437,3 +437,150 @@ test("browser JavaScript WFST providers reject malformed and reentrant callbacks
   assert.equal(selfClosing.start(), 0n, "a rejected self-close must not poison the resource");
   selfClosing.close();
 });
+
+const browserLatticeDomain = "example.maximum1";
+
+function browserMaximumOperand(operand) {
+  if (operand.domainId !== browserLatticeDomain ||
+      operand.localValue === null || typeof operand.localValue.value !== "number") {
+    throw new TypeError("foreign maximum lattice value");
+  }
+  return operand.localValue.value;
+}
+
+function browserBareMaximum(value) {
+  return {
+    value,
+    join(other) { return browserBareMaximum(Math.max(value, browserMaximumOperand(other))); },
+    meet(other) { return browserBareMaximum(Math.min(value, browserMaximumOperand(other))); },
+    equal(other) { return value === browserMaximumOperand(other); },
+    diagnostic() { return `maximum(${value})`; },
+  };
+}
+
+class BrowserMaximum {
+  constructor(value, calls = { batches: 0 }) {
+    this.value = value;
+    this.calls = calls;
+  }
+  join(other) {
+    return new BrowserMaximum(Math.max(this.value, browserMaximumOperand(other)), this.calls);
+  }
+  meet(other) {
+    return new BrowserMaximum(Math.min(this.value, browserMaximumOperand(other)), this.calls);
+  }
+  equal(other) { return this.value === browserMaximumOperand(other); }
+  diagnostic() { return `maximum(${this.value})`; }
+  stableBytes() { return new TextEncoder().encode(String(this.value)); }
+  joinMany(others) {
+    this.calls.batches += 1;
+    return new BrowserMaximum(
+      Math.max(this.value, ...others.map(browserMaximumOperand)), this.calls,
+    );
+  }
+  meetMany(others) {
+    this.calls.batches += 1;
+    return new BrowserMaximum(
+      Math.min(this.value, ...others.map(browserMaximumOperand)), this.calls,
+    );
+  }
+}
+
+test("browser JavaScript lattice providers execute bounds, batches, laws, and disposal", () => {
+  const calls = { batches: 0 };
+  const low = llingLlang.lattice(
+    new BrowserMaximum(2, calls), { domainId: browserLatticeDomain },
+  );
+  const middle = llingLlang.lattice(
+    new BrowserMaximum(5, calls), { domainId: browserLatticeDomain },
+  );
+  const high = llingLlang.lattice(
+    new BrowserMaximum(9, calls), { domainId: browserLatticeDomain },
+  );
+  const joined = low.join(middle);
+  const met = middle.meet(high);
+  const joinedMany = low.joinMany([middle, high]);
+  const metMany = high.meetMany([middle, low]);
+  try {
+    assert.equal(joined.diagnostic(), "maximum(5)");
+    assert.equal(met.diagnostic(), "maximum(5)");
+    assert.equal(joinedMany.diagnostic(), "maximum(9)");
+    assert.equal(metMany.diagnostic(), "maximum(2)");
+    assert.equal(joined.equal(middle), true);
+    assert.deepEqual([...high.stableBytes()], [...new TextEncoder().encode("9")]);
+    assert.ok(calls.batches >= 2);
+    llingLlang.validateLatticeLaws([low, middle, high]);
+  } finally {
+    for (const value of [joined, met, joinedMany, metMany, low, middle, high]) value.close();
+  }
+  assert.throws(() => low.diagnostic(), /closed/);
+  assert.doesNotThrow(() => low.close());
+});
+
+test("browser lattice capabilities renegotiate and reentrancy fails without poisoning", () => {
+  const source = new BrowserMaximum(3);
+  source.join = (other) => browserBareMaximum(
+    Math.max(source.value, browserMaximumOperand(other)),
+  );
+  const left = llingLlang.lattice(source, { domainId: browserLatticeDomain });
+  const right = llingLlang.lattice(
+    new BrowserMaximum(7), { domainId: browserLatticeDomain },
+  );
+  const downgraded = left.join(right);
+  const folded = downgraded.joinMany([left, right]);
+  left.close();
+  right.close();
+  downgraded.close();
+  try {
+    assert.equal(folded.diagnostic(), "maximum(7)");
+    assert.throws(() => folded.stableBytes(), /does not provide stable bytes/i);
+  } finally {
+    folded.close();
+  }
+
+  const provider = new BrowserMaximum(4);
+  const plainJoin = provider.join.bind(provider);
+  let reentrant;
+  provider.join = (other) => {
+    reentrant.diagnostic();
+    return plainJoin(other);
+  };
+  const operand = llingLlang.lattice(
+    new BrowserMaximum(1), { domainId: browserLatticeDomain },
+  );
+  reentrant = llingLlang.lattice(provider, { domainId: browserLatticeDomain });
+  assert.throws(() => reentrant.join(operand), /ProviderError/);
+  provider.join = plainJoin;
+  const recovered = reentrant.join(operand);
+  try {
+    assert.equal(recovered.diagnostic(), "maximum(4)");
+  } finally {
+    recovered.close();
+    reentrant.close();
+    operand.close();
+  }
+});
+
+test("browser lattice validation rejects malformed providers and domains", () => {
+  assert.throws(
+    () => llingLlang.lattice({}, { domainId: browserLatticeDomain }),
+    /missing join/,
+  );
+  assert.throws(
+    () => llingLlang.lattice(new BrowserMaximum(1), { domainId: "short" }),
+    /exactly 16/,
+  );
+  const local = llingLlang.lattice(
+    new BrowserMaximum(1), { domainId: browserLatticeDomain },
+  );
+  const foreign = llingLlang.lattice(
+    new BrowserMaximum(2), { domainId: "example.maximum2" },
+  );
+  try {
+    assert.throws(() => local.join(foreign), /different domains/);
+    assert.throws(() => llingLlang.validateLatticeLaws([]), /one through sixteen/);
+  } finally {
+    foreign.close();
+    local.close();
+  }
+});

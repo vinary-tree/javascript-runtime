@@ -128,9 +128,9 @@ the [complete provider guide](https://github.com/vinary-tree/vinary-tree-interop
 
 ## Compute with custom JavaScript lattices
 
-The native Node entrypoint can root immutable JavaScript or TypeScript values
-behind lling-llang's dynamic lattice interface. A stable 16-byte domain ID
-prevents accidental operations between unrelated algebras:
+Every backend can root immutable JavaScript or TypeScript values behind
+lling-llang's dynamic lattice interface. A stable 16-byte domain ID prevents
+accidental operations between unrelated algebras:
 
 ```js
 class Maximum {
@@ -157,7 +157,8 @@ results may renegotiate that capability and automatically continue pairwise.
 absorption over representative values. The adapter holds no mutex while host
 code runs, rejects recursive entry without blocking, copies foreign stable
 bytes eagerly, and retains every result independently. Browser WebAssembly and
-WASI lattice trampolines remain follow-up work.
+WASI use the same contract through runtime-native generational handle tables;
+native Node uses the lower-overhead N-API resource path.
 
 ## Backend contract
 
