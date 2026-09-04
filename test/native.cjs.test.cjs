@@ -22,3 +22,24 @@ test("CommonJS exposes JavaScript-provided scalar WFSTs", () => {
   });
   wfst.close();
 });
+
+test("CommonJS exposes JavaScript-provided lattice values", () => {
+  const domainId = "example.maximum1";
+  const maximum = (value) => ({
+    value,
+    join(other) { return maximum(Math.max(value, other.localValue.value)); },
+    meet(other) { return maximum(Math.min(value, other.localValue.value)); },
+    equal(other) { return value === other.localValue.value; },
+    diagnostic() { return `maximum(${value})`; },
+  });
+  const left = llingLlang.lattice(maximum(2), { domainId });
+  const right = llingLlang.lattice(maximum(7), { domainId });
+  const joined = left.join(right);
+  try {
+    assert.equal(joined.diagnostic(), "maximum(7)");
+  } finally {
+    joined.close();
+    right.close();
+    left.close();
+  }
+});

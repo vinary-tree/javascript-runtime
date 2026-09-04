@@ -2,7 +2,9 @@ import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
+  assertLatticeProvider,
   assertScalarWfstProvider,
+  normalizeLatticeProviderOptions,
   normalizeScalarWfstProviderOptions,
 } from "@vinary-tree/vinary-tree-interop";
 
@@ -71,6 +73,12 @@ function cacheLimit(value, fallback, name) {
 function requireScalarWfstProvider(provider) {
   assertScalarWfstProvider(provider);
   return provider;
+}
+
+function hostLattice(provider, options) {
+  assertLatticeProvider(provider);
+  const { domainId } = normalizeLatticeProviderOptions(options);
+  return [provider, domainId];
 }
 
 function hostWfstOptions(options) {
@@ -469,6 +477,56 @@ class Wfst {
   [Symbol.dispose]() { this.close(); }
 }
 
+class Lattice {
+  #handle;
+  constructor(handle, domainId) {
+    this.#handle = handle;
+    Object.defineProperties(this, {
+      interfaceId: { value: "vt.lattice.val.1", enumerable: true },
+      runtimeIdentity: { value: runtimeIdentity, enumerable: true },
+      domainId: { value: domainId, enumerable: true },
+    });
+  }
+  get _handle() {
+    if (this.#handle === null) throw new Error("lattice value is closed");
+    return this.#handle;
+  }
+  #operand(other) {
+    if (other?.runtimeIdentity !== runtimeIdentity ||
+        other.interfaceId !== "vt.lattice.val.1" ||
+        other.domainId !== this.domainId) {
+      throw new TypeError("lattice operand belongs to a different runtime or domain");
+    }
+    return other._handle;
+  }
+  join(other) { return new Lattice(ffi.latticeJoin(this._handle, this.#operand(other)), this.domainId); }
+  meet(other) { return new Lattice(ffi.latticeMeet(this._handle, this.#operand(other)), this.domainId); }
+  equal(other) { return ffi.latticeEqual(this._handle, this.#operand(other)); }
+  stableBytes() { return ffi.latticeStableBytes(this._handle); }
+  diagnostic() { return ffi.latticeDiagnostic(this._handle); }
+  joinMany(others) {
+    if (!Array.isArray(others)) throw new TypeError("lattice operands must be an array");
+    return new Lattice(
+      ffi.latticeJoinMany(this._handle, others.map((other) => this.#operand(other))),
+      this.domainId,
+    );
+  }
+  meetMany(others) {
+    if (!Array.isArray(others)) throw new TypeError("lattice operands must be an array");
+    return new Lattice(
+      ffi.latticeMeetMany(this._handle, others.map((other) => this.#operand(other))),
+      this.domainId,
+    );
+  }
+  close() {
+    if (this.#handle !== null) {
+      ffi.latticeClose(this.#handle);
+      this.#handle = null;
+    }
+  }
+  [Symbol.dispose]() { this.close(); }
+}
+
 class WfstBuilder {
   #handle = ffi.wfstBuilderNew();
   get _handle() {
@@ -539,6 +597,21 @@ const liblevenshtein = Object.freeze({
 const llingLlang = Object.freeze({
   runtimeIdentity,
   vectorWfst() { return new WfstBuilder(); },
+  lattice(provider, options) {
+    const [value, domainId] = hostLattice(provider, options);
+    return new Lattice(ffi.hostLatticeNew(value, domainId), domainId);
+  },
+  validateLatticeLaws(values) {
+    if (!Array.isArray(values)) throw new TypeError("lattice law samples must be an array");
+    const handles = values.map((value) => {
+      if (value?.runtimeIdentity !== runtimeIdentity ||
+          value.interfaceId !== "vt.lattice.val.1") {
+        throw new TypeError("lattice sample belongs to a different runtime");
+      }
+      return value._handle;
+    });
+    ffi.latticeValidateLaws(handles);
+  },
   scalarWfst(provider, options = {}) {
     const [unitDomain, weightDomain, flags] = hostWfstOptions(options);
     return new Wfst(ffi.hostWfstNew(

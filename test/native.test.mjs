@@ -58,6 +58,61 @@ function declaredMembers(body) {
   return { methods, properties };
 }
 
+const maximumLatticeDomain = "example.maximum1";
+
+function maximumOperandValue(operand) {
+  const provider = operand.localValue;
+  if (operand.domainId !== maximumLatticeDomain ||
+      provider === null || typeof provider.value !== "number") {
+    throw new TypeError("foreign maximum lattice value");
+  }
+  return provider.value;
+}
+
+function bareMaximumLattice(value) {
+  return {
+    value,
+    join(other) { return bareMaximumLattice(Math.max(value, maximumOperandValue(other))); },
+    meet(other) { return bareMaximumLattice(Math.min(value, maximumOperandValue(other))); },
+    equal(other) { return value === maximumOperandValue(other); },
+    diagnostic() { return `maximum(${value})`; },
+  };
+}
+
+class MaximumLatticeProvider {
+  constructor(value, telemetry = { joins: 0, meets: 0 }) {
+    this.value = value;
+    this.telemetry = telemetry;
+  }
+  join(other) {
+    this.telemetry.joins += 1;
+    return new MaximumLatticeProvider(
+      Math.max(this.value, maximumOperandValue(other)), this.telemetry,
+    );
+  }
+  meet(other) {
+    this.telemetry.meets += 1;
+    return new MaximumLatticeProvider(
+      Math.min(this.value, maximumOperandValue(other)), this.telemetry,
+    );
+  }
+  equal(other) { return this.value === maximumOperandValue(other); }
+  diagnostic() { return `maximum(${this.value})`; }
+  stableBytes() { return new TextEncoder().encode(String(this.value)); }
+  joinMany(others) {
+    this.telemetry.joins += 1;
+    return new MaximumLatticeProvider(
+      Math.max(this.value, ...others.map(maximumOperandValue)), this.telemetry,
+    );
+  }
+  meetMany(others) {
+    this.telemetry.meets += 1;
+    return new MaximumLatticeProvider(
+      Math.min(this.value, ...others.map(maximumOperandValue)), this.telemetry,
+    );
+  }
+}
+
 test("native N-API uses one cross-project runtime and exact snapshots", () => {
   assert.equal(libdictenstein.runtimeIdentity, runtimeIdentity);
   assert.equal(liblevenshtein.runtimeIdentity, runtimeIdentity);
@@ -383,6 +438,9 @@ test("every index.d.ts member exists on the native path", async () => {
   const builder = llingLlang.vectorWfst();
   builder.setStart(builder.addState());
   const wfst = duallity.wfst(dictionary, "cat", 1);
+  const lattice = llingLlang.lattice(
+    new MaximumLatticeProvider(1), { domainId: maximumLatticeDomain },
+  );
 
   // Interfaces describing plain data records need no live instance; every
   // interface that declares behavior must map to one so a new declaration
@@ -397,6 +455,7 @@ test("every index.d.ts member exists on the native path", async () => {
     ["QueryCache", cache],
     ["Wfst", wfst],
     ["WfstBuilder", builder],
+    ["Lattice", lattice],
     ["LibdictensteinNamespace", libdictenstein],
     ["LiblevenshteinNamespace", liblevenshtein],
     ["LlingLlangNamespace", llingLlang],
@@ -431,6 +490,7 @@ test("every index.d.ts member exists on the native path", async () => {
     cache.close();
     wfst.close();
     builder.close();
+    lattice.close();
     transducer.close();
     pattern.close();
     rules.close();
@@ -763,4 +823,96 @@ test("native JavaScript WFST provider failures and reentrancy remain contained",
   selfClosing = llingLlang.scalarWfst(selfClosingProvider);
   assert.equal(selfClosing.start(), 0n, "the active callback retains its context through self-close");
   assert.throws(() => selfClosing.start(), /closed/);
+});
+
+test("native JavaScript lattice providers execute bounds, batches, laws, and ownership", () => {
+  const telemetry = { joins: 0, meets: 0 };
+  const low = llingLlang.lattice(
+    new MaximumLatticeProvider(2, telemetry), { domainId: maximumLatticeDomain },
+  );
+  const middle = llingLlang.lattice(
+    new MaximumLatticeProvider(5, telemetry), { domainId: maximumLatticeDomain },
+  );
+  const high = llingLlang.lattice(
+    new MaximumLatticeProvider(9, telemetry), { domainId: maximumLatticeDomain },
+  );
+  const joined = low.join(middle);
+  const met = middle.meet(high);
+  const joinedMany = low.joinMany([middle, high]);
+  const metMany = high.meetMany([middle, low]);
+  try {
+    assert.equal(joined.diagnostic(), "maximum(5)");
+    assert.equal(met.diagnostic(), "maximum(5)");
+    assert.equal(joinedMany.diagnostic(), "maximum(9)");
+    assert.equal(metMany.diagnostic(), "maximum(2)");
+    assert.equal(joined.equal(middle), true);
+    assert.deepEqual([...high.stableBytes()], [...new TextEncoder().encode("9")]);
+    assert.ok(telemetry.joins > 0);
+    assert.ok(telemetry.meets > 0);
+    llingLlang.validateLatticeLaws([low, middle, high]);
+  } finally {
+    for (const value of [joined, met, joinedMany, metMany, low, middle, high]) value.close();
+  }
+  assert.throws(() => low.diagnostic(), /closed/);
+  assert.doesNotThrow(() => low.close());
+});
+
+test("native lattice results renegotiate optional capabilities and fall back safely", () => {
+  const source = new MaximumLatticeProvider(3);
+  source.join = (other) => bareMaximumLattice(
+    Math.max(source.value, maximumOperandValue(other)),
+  );
+  const left = llingLlang.lattice(source, { domainId: maximumLatticeDomain });
+  const right = llingLlang.lattice(
+    new MaximumLatticeProvider(7), { domainId: maximumLatticeDomain },
+  );
+  const downgraded = left.join(right);
+  const folded = downgraded.joinMany([left, right]);
+  left.close();
+  right.close();
+  downgraded.close();
+  try {
+    assert.equal(folded.diagnostic(), "maximum(7)");
+    assert.throws(() => folded.stableBytes(), /does not provide stable bytes/i);
+  } finally {
+    folded.close();
+  }
+});
+
+test("native lattice provider validation, domains, and reentrancy are contained", () => {
+  assert.throws(
+    () => llingLlang.lattice({}, { domainId: maximumLatticeDomain }),
+    /missing join/,
+  );
+  assert.throws(
+    () => llingLlang.lattice(new MaximumLatticeProvider(1), { domainId: "short" }),
+    /exactly 16/,
+  );
+  const first = llingLlang.lattice(
+    new MaximumLatticeProvider(1), { domainId: maximumLatticeDomain },
+  );
+  const foreign = llingLlang.lattice(
+    new MaximumLatticeProvider(2), { domainId: "example.maximum2" },
+  );
+  assert.throws(() => first.join(foreign), /different runtime or domain/);
+
+  const provider = new MaximumLatticeProvider(4);
+  const plainJoin = provider.join.bind(provider);
+  let reentrant;
+  provider.join = (other) => {
+    reentrant.diagnostic();
+    return plainJoin(other);
+  };
+  reentrant = llingLlang.lattice(provider, { domainId: maximumLatticeDomain });
+  assert.throws(() => reentrant.join(first), /callback failed|provider/i);
+  provider.join = plainJoin;
+  const recovered = reentrant.join(first);
+  try {
+    assert.equal(recovered.diagnostic(), "maximum(4)");
+  } finally {
+    recovered.close();
+    reentrant.close();
+    foreign.close();
+    first.close();
+  }
 });

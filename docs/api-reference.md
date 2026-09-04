@@ -403,6 +403,8 @@ The `LlingLlangNamespace` value is exported as `llingLlang`.
 |---|---|
 | `llingLlang.runtimeIdentity` | Identity required for input WFSTs. |
 | `llingLlang.vectorWfst()` | Create a mutable `WfstBuilder`. |
+| `llingLlang.lattice(provider, options)` | Root one immutable JavaScript/TypeScript `LatticeProvider` as a closeable native `Lattice`. |
+| `llingLlang.validateLatticeLaws(values)` | Try to falsify the lattice laws over one to sixteen same-domain representative values. |
 | `llingLlang.scalarWfst(provider, options?)` | Root a JavaScript/TypeScript `ScalarWfstProvider` as an immutable closeable WFST. |
 | `llingLlang.compose(first, second)` | Lazily compose two same-runtime `Wfst` resources. |
 | `WfstBuilder.addState()` | Add a state and return its numeric builder-local identifier. |
@@ -435,6 +437,54 @@ the product owns an independent retain.
 
 The runtime-specific ownership and error model is documented in the
 [JavaScript host-provider guide](https://github.com/vinary-tree/vinary-tree-interop/blob/master/docs/language-bindings/javascript-host-providers.md).
+
+### Host-defined lattice values
+
+`LatticeProvider` lets JavaScript or TypeScript supply immutable values for an
+application-specific lattice. `LatticeProviderOptions.domainId` is a printable
+16-byte `ProviderDomainId`; operations reject a `LatticeResource` from another
+runtime or domain before invoking foreign code. Each `LatticeOperand` contains
+that domain ID, an eager `localValue` for values owned by this JavaScript
+runtime, and copied `stableBytes` for compatible foreign resources when they
+are available. It contains no borrowed pointer or buffer.
+
+```js
+class Maximum {
+  constructor(value) { this.value = value; }
+  join(other) { return new Maximum(Math.max(this.value, other.localValue.value)); }
+  meet(other) { return new Maximum(Math.min(this.value, other.localValue.value)); }
+  equal(other) { return this.value === other.localValue.value; }
+  diagnostic() { return `maximum(${this.value})`; }
+}
+
+using low = llingLlang.lattice(
+  new Maximum(3),
+  { domainId: "example.maximum1" },
+);
+using high = llingLlang.lattice(
+  new Maximum(8),
+  { domainId: "example.maximum1" },
+);
+using upperBound = low.join(high);
+console.log(upperBound.diagnostic()); // maximum(8)
+```
+
+`Lattice.interfaceId` is always `"vt.lattice.val.1"`;
+`Lattice.runtimeIdentity` and `Lattice.domainId` identify compatible operands.
+`Lattice.join` and `Lattice.meet` compute binary bounds, while
+`Lattice.equal` asks the provider for semantic equality. `Lattice.joinMany`
+and `Lattice.meetMany` use provider batches of at most 256 operands when the
+current value advertises both optional batch methods, then automatically fall
+back to pairwise calls if a result renegotiates that capability.
+
+`Lattice.stableBytes` returns copied deterministic identity bytes when the
+provider implements the optional method. `Lattice.diagnostic` returns bounded
+human-readable text. `Lattice.close` and `Lattice[Symbol.dispose]` release the
+native retain idempotently. Callback exceptions become provider errors;
+recursive entry fails immediately through an atomic gate instead of blocking.
+The current executable lattice trampoline is available on the native N-API
+entrypoint. Browser WebAssembly and WASI lattice trampolines remain follow-up
+work; the scalar-WFST provider is already available on all three backends.
 
 ### duallity
 
@@ -484,7 +534,8 @@ its generation before reuse.
 ## Lifecycle and ownership
 
 Every resource type that declares `close()` owns native or WebAssembly state.
-`Dictionary`, `DictionaryEntryCursor`, `QueryCursor`, `QueryCache`, `Wfst`, and `WfstBuilder` also implement
+`Dictionary`, `DictionaryEntryCursor`, `QueryCursor`, `QueryCache`, `Wfst`,
+`WfstBuilder`, and `Lattice` also implement
 `Symbol.dispose`, so they support explicit resource management:
 
 ```js

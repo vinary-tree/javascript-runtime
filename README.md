@@ -126,6 +126,39 @@ contains exceptions as provider errors, rejects reentrant callbacks without
 blocking, and validates all state and arc records before publishing them. See
 the [complete provider guide](https://github.com/vinary-tree/vinary-tree-interop/blob/master/docs/language-bindings/javascript-host-providers.md).
 
+## Compute with custom JavaScript lattices
+
+The native Node entrypoint can root immutable JavaScript or TypeScript values
+behind lling-llang's dynamic lattice interface. A stable 16-byte domain ID
+prevents accidental operations between unrelated algebras:
+
+```js
+class Maximum {
+  constructor(value) { this.value = value; }
+  join(other) { return new Maximum(Math.max(this.value, other.localValue.value)); }
+  meet(other) { return new Maximum(Math.min(this.value, other.localValue.value)); }
+  equal(other) { return this.value === other.localValue.value; }
+  diagnostic() { return `maximum(${this.value})`; }
+}
+
+using first = llingLlang.lattice(new Maximum(3), {
+  domainId: "example.maximum1",
+});
+using second = llingLlang.lattice(new Maximum(8), {
+  domainId: "example.maximum1",
+});
+using maximum = first.join(second);
+console.log(maximum.diagnostic()); // maximum(8)
+```
+
+Optional paired `joinMany` and `meetMany` callbacks enable bounded bulk folds;
+results may renegotiate that capability and automatically continue pairwise.
+`validateLatticeLaws` probes idempotence, commutativity, associativity, and
+absorption over representative values. The adapter holds no mutex while host
+code runs, rejects recursive entry without blocking, copies foreign stable
+bytes eagerly, and retains every result independently. Browser WebAssembly and
+WASI lattice trampolines remain follow-up work.
+
 ## Backend contract
 
 | Import | Backend | Intended host |

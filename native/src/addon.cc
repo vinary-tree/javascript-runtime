@@ -1,5 +1,6 @@
 #include <node_api.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
@@ -30,6 +31,7 @@ struct PatternHandle { LlevPhoneticPattern* value; };
 struct RulesHandle { LlevPhoneticRuleSet* value; };
 struct WfstBuilderHandle { LlingWfstBuilder* value; };
 struct WfstHandle { VtResource value; };
+struct LatticeHandle { LlingLatticeValue* value; };
 
 struct JsWfstProviderContext {
   std::atomic<uint64_t> references{1};
@@ -1235,7 +1237,8 @@ bool is_null(napi_env env, napi_value value) {
          napi_strict_equals(env, value, null_value, &equal) == napi_ok && equal;
 }
 
-bool call_provider_method(JsWfstProviderContext* context, const char* name,
+template <typename ProviderContext>
+bool call_provider_method(ProviderContext* context, const char* name,
                           size_t argument_count, const napi_value* arguments,
                           napi_value* result) {
   napi_value provider, method;
@@ -1678,6 +1681,8 @@ napi_value host_wfst_new(napi_env env, napi_callback_info info) {
   return wfst_external(env, VtResource{context, js_wfst_resource_table()});
 }
 
+#include "lattice_provider.inc"
+
 napi_value wfst_builder_new(napi_env env, napi_callback_info) {
   LlingWfstBuilder* builder = nullptr;
   const auto status = lling_wfst_builder_new(&builder);
@@ -2019,6 +2024,16 @@ napi_value initialize(napi_env env, napi_value exports) {
     {"wfstBuilderAddArc", nullptr, wfst_builder_add_arc, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"wfstBuilderBuild", nullptr, wfst_builder_build, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"hostWfstNew", nullptr, host_wfst_new, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"hostLatticeNew", nullptr, host_lattice_new, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"latticeClose", nullptr, lattice_close, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"latticeJoin", nullptr, lattice_join, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"latticeMeet", nullptr, lattice_meet, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"latticeEqual", nullptr, lattice_equal_value, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"latticeStableBytes", nullptr, lattice_stable_bytes_value, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"latticeDiagnostic", nullptr, lattice_diagnostic_value, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"latticeJoinMany", nullptr, lattice_join_many_value, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"latticeMeetMany", nullptr, lattice_meet_many_value, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"latticeValidateLaws", nullptr, lattice_validate_laws_value, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"duallityWfstNew", nullptr, duallity_wfst_new, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"wfstCompose", nullptr, wfst_compose, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"wfstClose", nullptr, wfst_close, nullptr, nullptr, nullptr, napi_default, nullptr},

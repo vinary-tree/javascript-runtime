@@ -2,6 +2,9 @@
 
 import type {
   DictionaryResource,
+  LatticeProvider,
+  LatticeProviderOptions,
+  LatticeResource,
   RuntimeIdentity,
   ScalarWfstProvider,
   ScalarWfstProviderOptions,
@@ -10,6 +13,11 @@ import type {
 
 export type {
   DictionaryResource,
+  LatticeOperand,
+  LatticeProvider,
+  LatticeProviderOptions,
+  LatticeResource,
+  ProviderDomainId,
   Resource,
   RuntimeIdentity,
   ScalarWfstProvider,
@@ -180,9 +188,22 @@ export interface WfstBuilder {
   close(): void;
   [Symbol.dispose](): void;
 }
+export interface Lattice extends LatticeResource {
+  join(other: Lattice): Lattice;
+  meet(other: Lattice): Lattice;
+  equal(other: Lattice): boolean;
+  stableBytes(): Uint8Array;
+  diagnostic(): string;
+  joinMany(others: readonly Lattice[]): Lattice;
+  meetMany(others: readonly Lattice[]): Lattice;
+  close(): void;
+  [Symbol.dispose](): void;
+}
 export interface LlingLlangNamespace {
   readonly runtimeIdentity: RuntimeIdentity;
   vectorWfst(): WfstBuilder;
+  lattice(provider: LatticeProvider, options: LatticeProviderOptions): Lattice;
+  validateLatticeLaws(values: readonly Lattice[]): void;
   scalarWfst(provider: ScalarWfstProvider, options?: ScalarWfstProviderOptions): Wfst;
   compose(first: Wfst, second: Wfst): Wfst;
 }

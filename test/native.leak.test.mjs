@@ -166,6 +166,17 @@ function buildHostWfst() {
   return llingLlang.scalarWfst(provider, { acyclic: true });
 }
 
+function buildHostLattice(value) {
+  const maximum = (current) => ({
+    value: current,
+    join(other) { return maximum(Math.max(current, other.localValue.value)); },
+    meet(other) { return maximum(Math.min(current, other.localValue.value)); },
+    equal(other) { return current === other.localValue.value; },
+    diagnostic() { return `maximum(${current})`; },
+  });
+  return llingLlang.lattice(maximum(value), { domainId: "example.maximum1" });
+}
+
 test("lling-llang vector WFST build cycle reaches memory steady state", () => {
   assertSteady("vectorWfst", () => {
     const builder = llingLlang.vectorWfst();
@@ -207,6 +218,28 @@ test("JavaScript-provided WFST finalizers release rooted providers", async () =>
     wfst.state(wfst.start());
     // Deliberately rely on the N-API external finalizer. The settling GC in
     // `measure` must reclaim both the native context and its rooted provider.
+  });
+});
+
+test("JavaScript-provided lattice operations reach memory steady state", () => {
+  assertSteady("hostLattice", () => {
+    const left = buildHostLattice(2);
+    const right = buildHostLattice(7);
+    const joined = left.join(right);
+    joined.diagnostic();
+    joined.close();
+    right.close();
+    left.close();
+  });
+});
+
+test("JavaScript-provided lattice finalizers release rooted providers", async () => {
+  await assertFinalizerSteady("hostLatticeFinalizer", () => {
+    const left = buildHostLattice(2);
+    const right = buildHostLattice(7);
+    const joined = left.join(right);
+    joined.diagnostic();
+    // Exercise finalization for source and derived provider contexts.
   });
 });
 
