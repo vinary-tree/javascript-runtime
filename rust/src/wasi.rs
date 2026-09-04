@@ -10,13 +10,16 @@ use liblevenshtein::bindings::{
 use liblevenshtein::transducer::{Algorithm, QueryCacheLimits};
 use lling_llang::bindings::OwnedWfstResource;
 use lling_llang::prelude::{MutableWfst, TropicalWeight, VectorWfst, Wfst};
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::slice;
 use std::str;
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use vinary_tree_interop::{
-    VtResource, VtStatus, VtWfstArc, VtWfstVTable, VT_WFST_INTERFACE_ID, VT_WFST_INTERFACE_VERSION,
+    wfst_flags, VtInterfaceId, VtResource, VtResourceVTable, VtStatus, VtUnitDomain,
+    VtWeightDomain, VtWfstArc, VtWfstVTable, VT_ABI_VERSION, VT_WFST_INTERFACE_ID,
+    VT_WFST_INTERFACE_VERSION,
 };
 
 const FAILURE: u32 = u32::MAX;
@@ -106,15 +109,253 @@ struct EntryCursor {
 }
 
 struct WasiWfst {
-    resource: OwnedWfstResource,
+    resource: WasiWfstResource,
     encoded: Vec<u8>,
 }
+
+enum WasiWfstResource {
+    Engine(OwnedWfstResource),
+    Host(HostOwnedWfstResource),
+}
+
+impl WasiWfstResource {
+    fn as_raw(&self) -> VtResource {
+        match self {
+            Self::Engine(resource) => resource.as_raw(),
+            Self::Host(resource) => resource.as_raw(),
+        }
+    }
+}
+
+#[link(wasm_import_module = "vinary_tree_host")]
+extern "C" {
+    fn host_provider_release(handle: u32);
+    fn host_provider_start(handle: u32, out_state: *mut u64) -> u32;
+    fn host_provider_num_states(handle: u32, out_count: *mut usize, out_known: *mut u8) -> u32;
+    fn host_provider_state_info(
+        handle: u32,
+        state: u64,
+        out_valid: *mut u8,
+        out_is_final: *mut u8,
+        out_final_weight: *mut f64,
+    ) -> u32;
+    fn host_provider_state_arcs(
+        handle: u32,
+        state: u64,
+        start: usize,
+        out_arcs: *mut VtWfstArc,
+        capacity: usize,
+        out_written: *mut usize,
+        out_total: *mut usize,
+    ) -> u32;
+}
+
+struct HostWfstContext {
+    retains: Cell<usize>,
+    host_handle: u32,
+    table: VtWfstVTable,
+}
+
+struct HostOwnedWfstResource(VtResource);
+
+// WASI preview 1 exposes this runtime as a single-threaded reactor. These
+// marker implementations only satisfy the process-global handle registry;
+// host callbacks never execute concurrently in this fallback transport.
+unsafe impl Send for HostOwnedWfstResource {}
+unsafe impl Sync for HostOwnedWfstResource {}
+
+impl HostOwnedWfstResource {
+    fn new(
+        host_handle: u32,
+        unit_domain: VtUnitDomain,
+        weight_domain: VtWeightDomain,
+        flags: u64,
+    ) -> Self {
+        let context = Box::new(HostWfstContext {
+            retains: Cell::new(1),
+            host_handle,
+            table: VtWfstVTable {
+                struct_size: std::mem::size_of::<VtWfstVTable>(),
+                interface_version: VT_WFST_INTERFACE_VERSION,
+                unit_domain,
+                weight_domain,
+                reserved: 0,
+                flags,
+                snapshot: Some(host_wfst_snapshot),
+                start: Some(host_wfst_start),
+                num_states: Some(host_wfst_num_states),
+                state_info: Some(host_wfst_state_info),
+                state_arcs: Some(host_wfst_state_arcs),
+            },
+        });
+        Self(VtResource {
+            context: Box::into_raw(context).cast(),
+            vtable: &HOST_WFST_RESOURCE_VTABLE,
+        })
+    }
+
+    fn as_raw(&self) -> VtResource {
+        self.0
+    }
+}
+
+impl Drop for HostOwnedWfstResource {
+    fn drop(&mut self) {
+        unsafe { host_wfst_release(self.0.context) }
+    }
+}
+
+unsafe extern "C" fn host_wfst_retain(context: *mut c_void) {
+    if context.is_null() {
+        return;
+    }
+    let context = &*context.cast::<HostWfstContext>();
+    if let Some(next) = context.retains.get().checked_add(1) {
+        context.retains.set(next);
+    }
+}
+
+unsafe extern "C" fn host_wfst_release(context: *mut c_void) {
+    if context.is_null() {
+        return;
+    }
+    let context = context.cast::<HostWfstContext>();
+    let retains = (*context).retains.get();
+    if retains == 0 {
+        return;
+    }
+    if retains == 1 {
+        let context = Box::from_raw(context);
+        host_provider_release(context.host_handle);
+    } else {
+        (*context).retains.set(retains - 1);
+    }
+}
+
+unsafe extern "C" fn host_wfst_query_interface(
+    context: *mut c_void,
+    interface_id: *const VtInterfaceId,
+    minimum_version: u32,
+    out_vtable: *mut *const c_void,
+) -> u32 {
+    if context.is_null() || interface_id.is_null() || out_vtable.is_null() {
+        return VtStatus::NullPointer.to_raw();
+    }
+    if (*interface_id).bytes != VT_WFST_INTERFACE_ID.bytes
+        || minimum_version > VT_WFST_INTERFACE_VERSION
+    {
+        return VtStatus::Unsupported.to_raw();
+    }
+    let context = &*context.cast::<HostWfstContext>();
+    out_vtable.write((&context.table as *const VtWfstVTable).cast());
+    VtStatus::Ok.to_raw()
+}
+
+unsafe extern "C" fn host_wfst_snapshot(
+    context: *mut c_void,
+    out_snapshot: *mut VtResource,
+) -> u32 {
+    if context.is_null() || out_snapshot.is_null() {
+        return VtStatus::NullPointer.to_raw();
+    }
+    let context_ref = &*context.cast::<HostWfstContext>();
+    let Some(next) = context_ref.retains.get().checked_add(1) else {
+        return VtStatus::LimitExceeded.to_raw();
+    };
+    context_ref.retains.set(next);
+    out_snapshot.write(VtResource {
+        context,
+        vtable: &HOST_WFST_RESOURCE_VTABLE,
+    });
+    VtStatus::Ok.to_raw()
+}
+
+unsafe extern "C" fn host_wfst_start(context: *mut c_void, out_state: *mut u64) -> u32 {
+    if context.is_null() || out_state.is_null() {
+        return VtStatus::NullPointer.to_raw();
+    }
+    host_provider_start((*context.cast::<HostWfstContext>()).host_handle, out_state)
+}
+
+unsafe extern "C" fn host_wfst_num_states(
+    context: *mut c_void,
+    out_count: *mut usize,
+    out_known: *mut u8,
+) -> u32 {
+    if context.is_null() || out_count.is_null() || out_known.is_null() {
+        return VtStatus::NullPointer.to_raw();
+    }
+    host_provider_num_states(
+        (*context.cast::<HostWfstContext>()).host_handle,
+        out_count,
+        out_known,
+    )
+}
+
+unsafe extern "C" fn host_wfst_state_info(
+    context: *mut c_void,
+    state: u64,
+    out_valid: *mut u8,
+    out_is_final: *mut u8,
+    out_final_weight: *mut f64,
+) -> u32 {
+    if context.is_null()
+        || out_valid.is_null()
+        || out_is_final.is_null()
+        || out_final_weight.is_null()
+    {
+        return VtStatus::NullPointer.to_raw();
+    }
+    host_provider_state_info(
+        (*context.cast::<HostWfstContext>()).host_handle,
+        state,
+        out_valid,
+        out_is_final,
+        out_final_weight,
+    )
+}
+
+unsafe extern "C" fn host_wfst_state_arcs(
+    context: *mut c_void,
+    state: u64,
+    start: usize,
+    out_arcs: *mut VtWfstArc,
+    capacity: usize,
+    out_written: *mut usize,
+    out_total: *mut usize,
+) -> u32 {
+    if context.is_null()
+        || out_written.is_null()
+        || out_total.is_null()
+        || (capacity != 0 && out_arcs.is_null())
+    {
+        return VtStatus::NullPointer.to_raw();
+    }
+    host_provider_state_arcs(
+        (*context.cast::<HostWfstContext>()).host_handle,
+        state,
+        start,
+        out_arcs,
+        capacity,
+        out_written,
+        out_total,
+    )
+}
+
+static HOST_WFST_RESOURCE_VTABLE: VtResourceVTable = VtResourceVTable {
+    struct_size: std::mem::size_of::<VtResourceVTable>(),
+    abi_version: VT_ABI_VERSION,
+    reserved: 0,
+    retain: Some(host_wfst_retain),
+    release: Some(host_wfst_release),
+    query_interface: Some(host_wfst_query_interface),
+};
 
 enum Handle {
     Dictionary(Dictionary),
     Transducer(ResourceTransducer),
-    QueryCache(ResourceQueryCache),
-    Cursor(Cursor),
+    QueryCache(Box<ResourceQueryCache>),
+    Cursor(Box<Cursor>),
     EntryCursor(EntryCursor),
     WfstBuilder(VectorWfst<char, TropicalWeight>),
     Wfst(WasiWfst),
@@ -186,6 +427,28 @@ fn selected_domain(value: u32) -> Result<BindingUnitDomain, &'static str> {
         1 => Ok(BindingUnitDomain::UnicodeScalar),
         2 => Ok(BindingUnitDomain::U64),
         _ => Err("unknown unit domain"),
+    }
+}
+
+fn selected_wfst_unit_domain(value: u32) -> Result<VtUnitDomain, &'static str> {
+    match value {
+        1 => Ok(VtUnitDomain::Byte),
+        2 => Ok(VtUnitDomain::UnicodeScalar),
+        3 => Ok(VtUnitDomain::U64),
+        _ => Err("unknown WFST unit domain"),
+    }
+}
+
+fn selected_weight_domain(value: u32) -> Result<VtWeightDomain, &'static str> {
+    match value {
+        1 => Ok(VtWeightDomain::TropicalF64),
+        2 => Ok(VtWeightDomain::LogF64),
+        3 => Ok(VtWeightDomain::ProbabilityF64),
+        4 => Ok(VtWeightDomain::ArcticF64),
+        5 => Ok(VtWeightDomain::SignedTropicalF64),
+        6 => Ok(VtWeightDomain::CountF64),
+        7 => Ok(VtWeightDomain::BooleanF64),
+        _ => Err("unknown WFST weight domain"),
     }
 }
 
@@ -290,8 +553,17 @@ unsafe fn wfst_table(resource: VtResource) -> Result<*const VtWfstVTable, String
     if resource.is_null() {
         return Err("WFST resource is null".into());
     }
+    let base = &*resource.vtable;
+    if base.struct_size < std::mem::size_of::<VtResourceVTable>()
+        || base.abi_version != VT_ABI_VERSION
+        || base.reserved != 0
+        || base.retain.is_none()
+        || base.release.is_none()
+    {
+        return Err("resource has an incompatible base ABI".into());
+    }
     let mut interface: *const c_void = std::ptr::null();
-    let query = (*resource.vtable)
+    let query = base
         .query_interface
         .ok_or("resource has no query_interface")?;
     let status = query(
@@ -303,7 +575,54 @@ unsafe fn wfst_table(resource: VtResource) -> Result<*const VtWfstVTable, String
     if VtStatus::from_raw(status) != Some(VtStatus::Ok) || interface.is_null() {
         return Err("resource has no compatible scalar WFST interface".into());
     }
-    Ok(interface.cast())
+    let table = interface.cast::<VtWfstVTable>();
+    let table_ref = &*table;
+    if table_ref.struct_size < std::mem::size_of::<VtWfstVTable>()
+        || table_ref.interface_version < VT_WFST_INTERFACE_VERSION
+        || table_ref.reserved != 0
+        || table_ref.snapshot.is_none()
+        || table_ref.start.is_none()
+        || table_ref.state_info.is_none()
+        || table_ref.state_arcs.is_none()
+    {
+        return Err("resource has an incompatible scalar WFST interface".into());
+    }
+    Ok(table)
+}
+
+struct CapturedWfstResource(VtResource);
+
+impl CapturedWfstResource {
+    fn as_raw(&self) -> VtResource {
+        self.0
+    }
+}
+
+impl Drop for CapturedWfstResource {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.0.is_null() {
+                if let Some(release) = (*self.0.vtable).release {
+                    release(self.0.context);
+                }
+            }
+        }
+    }
+}
+
+fn capture_wfst(handle: u32) -> Result<CapturedWfstResource, String> {
+    let resource = {
+        let registry = locked_registry();
+        let Some(Handle::Wfst(wfst)) = registry.handles.get(&handle) else {
+            return Err("invalid WFST handle".into());
+        };
+        wfst.resource.as_raw()
+    };
+    unsafe {
+        let _ = wfst_table(resource)?;
+        (*resource.vtable).retain.unwrap()(resource.context);
+    }
+    Ok(CapturedWfstResource(resource))
 }
 
 /// Allocate a caller-owned linear-memory byte buffer.
@@ -766,10 +1085,10 @@ pub extern "C" fn vt_query_cache_new(
             _ => return registry.fail("invalid transducer handle"),
         }
     };
-    locked_registry().insert(Handle::QueryCache(ResourceQueryCache::new(
+    locked_registry().insert(Handle::QueryCache(Box::new(ResourceQueryCache::new(
         transducer,
         QueryCacheLimits::new(maximum_entries as usize, maximum_weight as usize),
-    )))
+    ))))
 }
 
 /// Drop all resident cache entries while retaining source ownership and counters.
@@ -932,7 +1251,7 @@ pub extern "C" fn vt_wfst_builder_build(handle: u32) -> u32 {
     match registry.handles.remove(&handle) {
         Some(Handle::WfstBuilder(graph)) if graph.start() != u32::MAX => {
             registry.insert(Handle::Wfst(WasiWfst {
-                resource: OwnedWfstResource::from_wfst(graph),
+                resource: WasiWfstResource::Engine(OwnedWfstResource::from_wfst(graph)),
                 encoded: Vec::new(),
             }))
         }
@@ -985,7 +1304,7 @@ pub unsafe extern "C" fn vt_duallity_wfst_new(
     let mut registry = locked_registry();
     match result {
         Ok(resource) => registry.insert(Handle::Wfst(WasiWfst {
-            resource,
+            resource: WasiWfstResource::Engine(resource),
             encoded: Vec::new(),
         })),
         Err(error) => registry.fail(error),
@@ -996,20 +1315,15 @@ pub unsafe extern "C" fn vt_duallity_wfst_new(
 #[no_mangle]
 pub extern "C" fn vt_wfst_compose(first: u32, second: u32) -> u32 {
     let result = (|| -> Result<OwnedWfstResource, String> {
-        let registry = locked_registry();
-        let Some(Handle::Wfst(first)) = registry.handles.get(&first) else {
-            return Err("invalid first WFST handle".into());
-        };
-        let Some(Handle::Wfst(second)) = registry.handles.get(&second) else {
-            return Err("invalid second WFST handle".into());
-        };
-        OwnedWfstResource::compose(first.resource.as_raw(), second.resource.as_raw())
+        let first = capture_wfst(first)?;
+        let second = capture_wfst(second)?;
+        OwnedWfstResource::compose(first.as_raw(), second.as_raw())
             .map_err(|error| error.to_string())
     })();
     let mut registry = locked_registry();
     match result {
         Ok(resource) => registry.insert(Handle::Wfst(WasiWfst {
-            resource,
+            resource: WasiWfstResource::Engine(resource),
             encoded: Vec::new(),
         })),
         Err(error) => registry.fail(error),
@@ -1023,18 +1337,12 @@ pub extern "C" fn vt_wfst_start(handle: u32, output_pointer: u32) -> u32 {
         return locked_registry().fail("output pointer is null");
     }
     let result = (|| -> Result<u64, String> {
-        let registry = locked_registry();
-        let Some(Handle::Wfst(wfst)) = registry.handles.get(&handle) else {
-            return Err("invalid WFST handle".into());
-        };
+        let resource = capture_wfst(handle)?;
         unsafe {
-            let table = &*wfst_table(wfst.resource.as_raw())?;
+            let table = &*wfst_table(resource.as_raw())?;
             let start = table.start.ok_or("WFST vtable has no start")?;
             let mut state = 0u64;
-            require_ok(
-                start(wfst.resource.as_raw().context, &mut state),
-                "WFST start",
-            )?;
+            require_ok(start(resource.as_raw().context, &mut state), "WFST start")?;
             Ok(state)
         }
     })();
@@ -1051,12 +1359,58 @@ pub extern "C" fn vt_wfst_start(handle: u32, output_pointer: u32) -> u32 {
 /// Return the numeric VtWeightDomain for a WFST handle.
 #[no_mangle]
 pub extern "C" fn vt_wfst_weight_domain(handle: u32) -> u32 {
+    let result = capture_wfst(handle).and_then(|resource| unsafe {
+        wfst_table(resource.as_raw()).map(|table| (*table).weight_domain as u32)
+    });
+    match result {
+        Ok(domain) => domain,
+        Err(error) => locked_registry().fail(error),
+    }
+}
+
+/// Return the numeric VtUnitDomain for a WFST handle.
+#[no_mangle]
+pub extern "C" fn vt_wfst_unit_domain(handle: u32) -> u32 {
+    let result = capture_wfst(handle).and_then(|resource| unsafe {
+        wfst_table(resource.as_raw()).map(|table| (*table).unit_domain as u32)
+    });
+    match result {
+        Ok(domain) => domain,
+        Err(error) => locked_registry().fail(error),
+    }
+}
+
+/// Adopt one host-table retain as an immutable scalar-WFST resource.
+#[no_mangle]
+pub extern "C" fn vt_host_wfst_new(
+    host_handle: u32,
+    unit_domain: u32,
+    weight_domain: u32,
+    flags: u64,
+) -> u32 {
+    let result = (|| {
+        if host_handle == 0 || host_handle == FAILURE {
+            return Err("invalid host provider handle");
+        }
+        let unit_domain = selected_wfst_unit_domain(unit_domain)?;
+        let weight_domain = selected_weight_domain(weight_domain)?;
+        let allowed = wfst_flags::IMMUTABLE | wfst_flags::LAZY | wfst_flags::ACYCLIC;
+        if flags & !allowed != 0 || flags & wfst_flags::IMMUTABLE == 0 {
+            return Err("invalid host WFST flags");
+        }
+        Ok(HostOwnedWfstResource::new(
+            host_handle,
+            unit_domain,
+            weight_domain,
+            flags,
+        ))
+    })();
     let mut registry = locked_registry();
-    let Some(Handle::Wfst(wfst)) = registry.handles.get(&handle) else {
-        return registry.fail("invalid WFST handle");
-    };
-    match unsafe { wfst_table(wfst.resource.as_raw()) } {
-        Ok(table) => unsafe { (*table).weight_domain as u32 },
+    match result {
+        Ok(resource) => registry.insert(Handle::Wfst(WasiWfst {
+            resource: WasiWfstResource::Host(resource),
+            encoded: Vec::new(),
+        })),
         Err(error) => registry.fail(error),
     }
 }
@@ -1064,13 +1418,12 @@ pub extern "C" fn vt_wfst_weight_domain(handle: u32) -> u32 {
 /// Expand one state into a contiguous header plus 40-byte arc records.
 #[no_mangle]
 pub extern "C" fn vt_wfst_state(handle: u32, state: u64) -> u32 {
-    let mut registry = locked_registry();
-    let resource = match registry.handles.get(&handle) {
-        Some(Handle::Wfst(wfst)) => wfst.resource.as_raw(),
-        _ => return registry.fail("invalid WFST handle"),
+    let resource = match capture_wfst(handle) {
+        Ok(resource) => resource,
+        Err(error) => return locked_registry().fail(error),
     };
     let result = (|| unsafe {
-        let table = wfst_table(resource)?;
+        let table = wfst_table(resource.as_raw())?;
         let table = &*table;
         let state_info = table.state_info.ok_or("WFST vtable has no state_info")?;
         let mut valid = 0;
@@ -1078,7 +1431,7 @@ pub extern "C" fn vt_wfst_state(handle: u32, state: u64) -> u32 {
         let mut final_weight = 0.0;
         require_ok(
             state_info(
-                resource.context,
+                resource.as_raw().context,
                 state,
                 &mut valid,
                 &mut final_state,
@@ -1086,17 +1439,22 @@ pub extern "C" fn vt_wfst_state(handle: u32, state: u64) -> u32 {
             ),
             "WFST state_info",
         )?;
+        if valid > 1 || final_state > 1 || (valid == 0 && final_state == 1) || final_weight.is_nan()
+        {
+            return Err("invalid WFST state metadata".into());
+        }
         let mut arcs = Vec::new();
         if valid == 1 {
             let state_arcs = table.state_arcs.ok_or("WFST vtable has no state_arcs")?;
             let mut offset = 0;
+            let mut expected_total = None;
             loop {
                 let mut page = vec![VtWfstArc::default(); 256];
                 let mut written = 0;
                 let mut total = 0;
                 require_ok(
                     state_arcs(
-                        resource.context,
+                        resource.as_raw().context,
                         state,
                         offset,
                         page.as_mut_ptr(),
@@ -1107,10 +1465,46 @@ pub extern "C" fn vt_wfst_state(handle: u32, state: u64) -> u32 {
                     "WFST state_arcs",
                 )?;
                 if written > page.len()
-                    || offset + written > total
+                    || offset
+                        .checked_add(written)
+                        .filter(|end| *end <= total)
+                        .is_none()
                     || (written == 0 && offset < total)
                 {
                     return Err("invalid WFST arc paging".into());
+                }
+                if expected_total.is_some_and(|expected| expected != total) {
+                    return Err("WFST provider changed the total arc count while paging".into());
+                }
+                expected_total = Some(total);
+                for arc in page.iter().take(written) {
+                    if arc.has_input > 1
+                        || arc.has_output > 1
+                        || arc.reserved != [0; 6]
+                        || arc.weight.is_nan()
+                    {
+                        return Err("invalid WFST arc metadata".into());
+                    }
+                    let labels = [
+                        (arc.input_label, arc.has_input),
+                        (arc.output_label, arc.has_output),
+                    ];
+                    for (label, present) in labels {
+                        if present == 0 {
+                            continue;
+                        }
+                        match table.unit_domain {
+                            VtUnitDomain::Byte if u8::try_from(label).is_err() => {
+                                return Err("WFST byte label is out of range".into());
+                            }
+                            VtUnitDomain::UnicodeScalar
+                                if u32::try_from(label).ok().and_then(char::from_u32).is_none() =>
+                            {
+                                return Err("WFST Unicode label is invalid".into());
+                            }
+                            _ => {}
+                        }
+                    }
                 }
                 arcs.extend(page.into_iter().take(written));
                 offset += written;
@@ -1121,6 +1515,7 @@ pub extern "C" fn vt_wfst_state(handle: u32, state: u64) -> u32 {
         }
         Ok::<_, String>((valid, final_state, final_weight, arcs))
     })();
+    let mut registry = locked_registry();
     match result {
         Ok((valid, final_state, final_weight, arcs)) => {
             let Some(Handle::Wfst(wfst)) = registry.handles.get_mut(&handle) else {
@@ -1183,11 +1578,11 @@ pub unsafe extern "C" fn vt_query_text(
     })();
     let mut registry = locked_registry();
     match result {
-        Ok(cursor) => registry.insert(Handle::Cursor(Cursor {
+        Ok(cursor) => registry.insert(Handle::Cursor(Box::new(Cursor {
             inner: cursor,
             batch: MatchBatch::default(),
             encoded: Vec::new(),
-        })),
+        }))),
         Err(error) => registry.fail(error),
     }
 }
@@ -1221,11 +1616,11 @@ pub unsafe extern "C" fn vt_query_bytes(
     })();
     let mut registry = locked_registry();
     match result {
-        Ok(cursor) => registry.insert(Handle::Cursor(Cursor {
+        Ok(cursor) => registry.insert(Handle::Cursor(Box::new(Cursor {
             inner: cursor,
             batch: MatchBatch::default(),
             encoded: Vec::new(),
-        })),
+        }))),
         Err(error) => registry.fail(error),
     }
 }
@@ -1256,11 +1651,11 @@ pub unsafe extern "C" fn vt_query_u64(
     })();
     let mut registry = locked_registry();
     match result {
-        Ok(cursor) => registry.insert(Handle::Cursor(Cursor {
+        Ok(cursor) => registry.insert(Handle::Cursor(Box::new(Cursor {
             inner: cursor,
             batch: MatchBatch::default(),
             encoded: Vec::new(),
-        })),
+        }))),
         Err(error) => registry.fail(error),
     }
 }
@@ -1268,7 +1663,7 @@ pub unsafe extern "C" fn vt_query_u64(
 fn take_query_cache(handle: u32) -> Result<ResourceQueryCache, String> {
     let mut registry = locked_registry();
     match registry.handles.remove(&handle) {
-        Some(Handle::QueryCache(cache)) => Ok(cache),
+        Some(Handle::QueryCache(cache)) => Ok(*cache),
         Some(other) => {
             registry.handles.insert(handle, other);
             Err("invalid query-cache handle".into())
@@ -1283,13 +1678,15 @@ fn finish_query_cache(
     result: Result<QueryCursor, String>,
 ) -> u32 {
     let mut registry = locked_registry();
-    registry.handles.insert(handle, Handle::QueryCache(cache));
+    registry
+        .handles
+        .insert(handle, Handle::QueryCache(Box::new(cache)));
     match result {
-        Ok(cursor) => registry.insert(Handle::Cursor(Cursor {
+        Ok(cursor) => registry.insert(Handle::Cursor(Box::new(Cursor {
             inner: cursor,
             batch: MatchBatch::default(),
             encoded: Vec::new(),
-        })),
+        }))),
         Err(error) => registry.fail(error),
     }
 }

@@ -3,7 +3,9 @@ import { basename, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
   cargoPackageVersion,
+  createComponentSourceLayout,
   componentRoots,
+  pinnedRustToolchain,
   requireComponentRoots,
   runtimeRoot,
   writeLocalCargoConfig,
@@ -13,12 +15,26 @@ const skipBuild = process.argv.includes("--skip-build");
 const model = JSON.parse(readFileSync(join(runtimeRoot, "release", "version.json"), "utf8"));
 const buildRoot = join(runtimeRoot, ".build", "components");
 const sdkRoot = join(runtimeRoot, ".build", "native-sdk");
+const sourceRoots = createComponentSourceLayout(join(runtimeRoot, ".build", "source-layout"));
+const rustToolchain = pinnedRustToolchain();
+const toolchainEnvironment = { ...process.env, RUSTUP_TOOLCHAIN: rustToolchain };
+const rustcVersion = spawnSync("rustc", ["-Vv"], {
+  cwd: runtimeRoot,
+  encoding: "utf8",
+  env: toolchainEnvironment,
+});
+if (rustcVersion.error) throw rustcVersion.error;
+if (rustcVersion.status !== 0) throw new Error(`cannot select Rust ${rustToolchain}`);
+const rustcRelease = rustcVersion.stdout.match(/^release:\s*(\S+)/m)?.[1];
+if (/^\d+\.\d+\.\d+$/.test(rustToolchain) && rustcRelease !== rustToolchain) {
+  throw new Error(`Rust toolchain ${rustToolchain} selected ${rustcRelease ?? "an unknown release"}`);
+}
 
 const builds = [
-  { key: "libdictenstein", root: componentRoots.libdictenstein, crate: "libdictenstein" },
-  { key: "liblevenshtein", root: componentRoots.liblevenshtein, crate: "liblevenshtein" },
-  { key: "lling-llang", root: componentRoots.llingLlang, crate: "lling_llang" },
-  { key: "duallity", root: componentRoots.duallity, crate: "duallity" },
+  { key: "libdictenstein", root: sourceRoots.libdictenstein, crate: "libdictenstein" },
+  { key: "liblevenshtein", root: sourceRoots.liblevenshtein, crate: "liblevenshtein" },
+  { key: "lling-llang", root: sourceRoots.llingLlang, crate: "lling_llang" },
+  { key: "duallity", root: sourceRoots.duallity, crate: "duallity" },
 ];
 
 const expected = new Map([
@@ -51,7 +67,11 @@ function runCargo(build) {
   // Build from the owning crate so Cargo applies that repository's portable
   // target configuration without leaking the runtime-only patch overlay into
   // an independent package's lockfile as `patch.unused` metadata.
-  const result = spawnSync("cargo", args, { cwd: build.root, stdio: "inherit" });
+  const result = spawnSync("cargo", args, {
+    cwd: build.root,
+    env: toolchainEnvironment,
+    stdio: "inherit",
+  });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`cargo build failed for ${build.key}`);
 }
@@ -104,6 +124,10 @@ for (const build of builds) {
 writeFileSync(join(sdkRoot, "provenance.json"), `${JSON.stringify({
   canonicalVersion: model.canonical,
   generatedAt: new Date().toISOString(),
+  rustToolchain: {
+    channel: rustToolchain,
+    rustc: rustcVersion.stdout.trim(),
+  },
   sourceCommits: Object.fromEntries(
     Object.entries(componentRoots).map(([name, root]) => [name, sourceCommit(root)]),
   ),

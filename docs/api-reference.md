@@ -1,7 +1,7 @@
 # JavaScript and TypeScript API reference
 
 This is the complete public reference for `@vinary-tree/javascript-runtime`
-4.0.0-rc.5. The package loads one native N-API, browser WebAssembly, or Node
+4.0.0-rc.6. The package loads one native N-API, browser WebAssembly, or Node
 WASI runtime and exposes four project namespaces over its single resource
 table. Project facades may narrow this surface, but they use the same objects,
 ownership rules, and runtime identity.
@@ -380,7 +380,7 @@ mapping so the facade, native ABI, tests, and documentation remain auditable.
 
 | Type/member | Meaning |
 |---|---|
-| `WfstArc.input` / `WfstArc.output` | Unicode label or `null` for epsilon. |
+| `WfstArc.input` / `WfstArc.output` | `number` for bytes, `string` for Unicode scalars, `bigint` for u64 tokens, or `null` for epsilon. |
 | `WfstArc.target` | Target state identifier as `bigint`. |
 | `WfstArc.weight` | Weight in the WFST's `WeightDomain`. |
 | `WfstState.valid` | Whether the requested state exists. |
@@ -388,10 +388,12 @@ mapping so the facade, native ABI, tests, and documentation remain auditable.
 | `WfstState.arcs` | Immutable outgoing `WfstArc` list. |
 | `Wfst.interfaceId` | Always `"vt.scalar-wfst.1"`. |
 | `Wfst.runtimeIdentity` | Identity of the owning runtime. |
+| `Wfst.unitDomain` | `"byte"`, `"unicode"`, or `"u64"`; determines the arc-label type. |
 | `Wfst.weightDomain` | Semiring/weight domain used by the resource. |
 | `Wfst.start()` | Start-state identifier. |
 | `Wfst.state(state)` | Inspect one state without materializing the whole graph. |
 | `Wfst.close()` | Release the retained WFST resource. |
+| `Wfst[Symbol.dispose]()` | Idempotently release the retained WFST resource. |
 
 ### lling-llang
 
@@ -401,6 +403,7 @@ The `LlingLlangNamespace` value is exported as `llingLlang`.
 |---|---|
 | `llingLlang.runtimeIdentity` | Identity required for input WFSTs. |
 | `llingLlang.vectorWfst()` | Create a mutable `WfstBuilder`. |
+| `llingLlang.scalarWfst(provider, options?)` | Root a JavaScript/TypeScript `ScalarWfstProvider` as an immutable closeable WFST. |
 | `llingLlang.compose(first, second)` | Lazily compose two same-runtime `Wfst` resources. |
 | `WfstBuilder.addState()` | Add a state and return its numeric builder-local identifier. |
 | `WfstBuilder.setStart(state)` | Select the start state. |
@@ -408,6 +411,30 @@ The `LlingLlangNamespace` value is exported as `llingLlang`.
 | `WfstBuilder.addArc(from, input, output, to, weight)` | Add a Unicode or epsilon arc. |
 | `WfstBuilder.build()` | Freeze the builder into a closeable `Wfst`. |
 | `WfstBuilder.close()` | Release unfinished builder storage. |
+| `WfstBuilder[Symbol.dispose]()` | Idempotently release unfinished builder storage. |
+
+### Host-defined scalar WFSTs
+
+`ScalarWfstProvider` requires `startState`, `stateCount`, `stateInfo`, and
+`stateArcs`. It may add `stateArcsPage(state, start, capacity)` to avoid
+materializing every outgoing arc at once. `ScalarWfstProviderOptions` selects
+the unit domain, weight domain, laziness claim, and acyclicity claim. Defaults
+are Unicode labels, tropical-f64 weights, lazy expansion, and no acyclicity
+claim.
+
+All state IDs, arc targets, page offsets, page totals, and known state counts
+are unsigned 64-bit `bigint` values. Byte labels are integers from 0 through
+255; Unicode labels are one-scalar strings; u64 labels are unsigned 64-bit
+`bigint`; and `null` is epsilon. Weights are JavaScript numbers other than NaN.
+
+Construction validates the method surface and options. Each callback validates
+its complete result before the runtime changes caller-visible output. Pages
+must stay within `capacity`, make progress, and report one stable total for an
+expansion. Closing the source is safe after a composition captures it because
+the product owns an independent retain.
+
+The runtime-specific ownership and error model is documented in the
+[JavaScript host-provider guide](https://github.com/vinary-tree/vinary-tree-interop/blob/master/docs/language-bindings/javascript-host-providers.md).
 
 ### duallity
 
@@ -447,10 +474,17 @@ contract. Provider work executes while the exclusive cache handle is outside
 the WASI resource table, so a callback never runs under the table lock and
 reentrant use fails diagnostically.
 
+`WasiRuntime.llingLlang.scalarWfst` stores each provider in an
+index-plus-generation host table and transfers one retain to the guest. Guest
+callbacks carry only the generational handle, state IDs, and bounded
+linear-memory buffers; raw Rust or JavaScript pointers never cross the
+boundary. Closing the last guest snapshot releases the table slot and advances
+its generation before reuse.
+
 ## Lifecycle and ownership
 
 Every resource type that declares `close()` owns native or WebAssembly state.
-`Dictionary`, `DictionaryEntryCursor`, `QueryCursor`, and `QueryCache` also implement
+`Dictionary`, `DictionaryEntryCursor`, `QueryCursor`, `QueryCache`, `Wfst`, and `WfstBuilder` also implement
 `Symbol.dispose`, so they support explicit resource management:
 
 ```js
@@ -464,8 +498,8 @@ try {
 }
 ```
 
-Use `close()` from `finally` for transducers, phonetic resources, WFSTs,
-builders, and environments without `using`. Every `close()` is idempotent, as
+Use `close()` from `finally` for transducers, phonetic resources, and
+environments without `using`. Every `close()` is idempotent, as
 is `[Symbol.dispose]()` where declared. Iterator exhaustion and iterator
 `return()` close cursors automatically, but an abandoned cursor that is neither
 exhausted nor closed remains live until exceptional-path garbage-collection

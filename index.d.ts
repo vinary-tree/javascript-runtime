@@ -1,6 +1,26 @@
 /// <reference lib="esnext.disposable" />
 
-import type { DictionaryResource, RuntimeIdentity, UnitDomain } from "@vinary-tree/vinary-tree-interop";
+import type {
+  DictionaryResource,
+  RuntimeIdentity,
+  ScalarWfstProvider,
+  ScalarWfstProviderOptions,
+  UnitDomain,
+} from "@vinary-tree/vinary-tree-interop";
+
+export type {
+  DictionaryResource,
+  Resource,
+  RuntimeIdentity,
+  ScalarWfstProvider,
+  ScalarWfstProviderOptions,
+  UnitDomain,
+  WeightDomain as InteropWeightDomain,
+  WfstProviderArc,
+  WfstProviderArcPage,
+  WfstProviderStateInfo,
+  WfstResource,
+} from "@vinary-tree/vinary-tree-interop";
 
 export type Algorithm = "standard" | "transposition" | "merge-and-split" | "damerau-levenshtein";
 export type QueryOrder = "traversal" | "distance-then-term";
@@ -130,8 +150,8 @@ export type WeightDomain =
   | "tropical-f64" | "log-f64" | "probability-f64" | "arctic-f64"
   | "signed-tropical-f64" | "count-f64" | "boolean-f64";
 export interface WfstArc {
-  readonly input: string | null;
-  readonly output: string | null;
+  readonly input: string | number | bigint | null;
+  readonly output: string | number | bigint | null;
   readonly target: bigint;
   readonly weight: number;
 }
@@ -144,10 +164,12 @@ export interface WfstState {
 export interface Wfst {
   readonly interfaceId: "vt.scalar-wfst.1";
   readonly runtimeIdentity: RuntimeIdentity;
+  readonly unitDomain: UnitDomain;
   readonly weightDomain: WeightDomain;
   start(): bigint;
   state(state: bigint): WfstState;
   close(): void;
+  [Symbol.dispose](): void;
 }
 export interface WfstBuilder {
   addState(): number;
@@ -156,10 +178,12 @@ export interface WfstBuilder {
   addArc(from: number, input: string | null, output: string | null, to: number, weight: number): void;
   build(): Wfst;
   close(): void;
+  [Symbol.dispose](): void;
 }
 export interface LlingLlangNamespace {
   readonly runtimeIdentity: RuntimeIdentity;
   vectorWfst(): WfstBuilder;
+  scalarWfst(provider: ScalarWfstProvider, options?: ScalarWfstProviderOptions): Wfst;
   compose(first: Wfst, second: Wfst): Wfst;
 }
 export type DuallityWfstKind =

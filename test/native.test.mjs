@@ -539,3 +539,228 @@ test("native duallity and lling-llang share retained scalar WFST resources", () 
   assert.equal(accepted, true);
   composed.close();
 });
+
+function linearHostWfstProvider({ paged = false, labels = [["c", "C"], ["a", "A"], ["t", "T"]] } = {}) {
+  const outgoing = labels.map(([input, output], index) => [{
+    input,
+    output,
+    target: BigInt(index + 1),
+    weight: 0,
+  }]);
+  outgoing.push([]);
+  const pageCalls = [];
+  const provider = {
+    pageCalls,
+    startState: () => 0n,
+    stateCount: () => BigInt(outgoing.length),
+    stateInfo: (state) => ({
+      valid: state >= 0n && state < BigInt(outgoing.length),
+      final: state === BigInt(outgoing.length - 1),
+      finalWeight: 0,
+    }),
+    stateArcs: (state) => outgoing[Number(state)] ?? [],
+  };
+  if (paged) {
+    provider.stateArcsPage = (state, start, capacity) => {
+      pageCalls.push({ state, start, capacity });
+      const arcs = outgoing[Number(state)] ?? [];
+      const first = Number(start);
+      return {
+        arcs: arcs.slice(first, first + capacity),
+        total: BigInt(arcs.length),
+      };
+    };
+    provider.stateArcs = () => {
+      throw new Error("paged providers must not materialize their complete arc list");
+    };
+  }
+  return provider;
+}
+
+test("native JavaScript WFST providers page, compose, snapshot, and dispose exactly", () => {
+  const provider = linearHostWfstProvider({ paged: true });
+  const uppercase = llingLlang.scalarWfst(provider, {
+    unitDomain: "unicode",
+    weightDomain: "tropical-f64",
+    acyclic: true,
+  });
+  assert.equal(uppercase.unitDomain, "unicode");
+  assert.equal(uppercase.weightDomain, "tropical-f64");
+  assert.equal(uppercase.start(), 0n);
+  assert.deepEqual(uppercase.state(0n), {
+    valid: true,
+    final: false,
+    finalWeight: 0,
+    arcs: [{ input: "c", output: "C", target: 1n, weight: 0 }],
+  });
+  assert.ok(provider.pageCalls.length > 0);
+  assert.equal(provider.pageCalls.every(({ capacity }) => capacity <= 256), true);
+
+  const dictionary = libdictenstein.dynamicDawg();
+  dictionary.put("cat", 1n);
+  const edit = duallity.wfst(dictionary, "cat", 0);
+  const composed = llingLlang.compose(edit, uppercase);
+  dictionary.close();
+  edit.close();
+  uppercase.close();
+  uppercase.close();
+
+  const pending = [[composed.start(), ""]];
+  const seen = new Set();
+  let accepted = false;
+  while (pending.length > 0) {
+    const [state, output] = pending.pop();
+    const key = `${state}:${output}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const expanded = composed.state(state);
+    if (expanded.final && output === "CAT") accepted = true;
+    for (const arc of expanded.arcs) pending.push([arc.target, output + (arc.output ?? "")]);
+  }
+  assert.equal(accepted, true, "composition must retain the provider snapshot after source close");
+  composed[Symbol.dispose]();
+  assert.throws(() => composed.start(), /closed/);
+  assert.doesNotThrow(() => composed[Symbol.dispose]());
+});
+
+test("native JavaScript WFST providers preserve byte and u64 label domains", () => {
+  for (const [unitDomain, label] of [["byte", 255], ["u64", (1n << 63n) + 17n]]) {
+    const provider = linearHostWfstProvider({ labels: [[label, label]] });
+    const wfst = llingLlang.scalarWfst(provider, { unitDomain });
+    try {
+      const [arc] = wfst.state(0n).arcs;
+      assert.equal(wfst.unitDomain, unitDomain);
+      assert.equal(arc.input, label);
+      assert.equal(arc.output, label);
+    } finally {
+      wfst.close();
+    }
+  }
+});
+
+test("native JavaScript WFST provider validation rejects malformed contracts", () => {
+  const complete = linearHostWfstProvider();
+  assert.throws(() => llingLlang.scalarWfst(null), /must be an object/);
+  assert.throws(
+    () => llingLlang.scalarWfst({ ...complete, stateInfo: null }),
+    /stateInfo/,
+  );
+  assert.throws(() => llingLlang.scalarWfst(complete, null), /options must be an object/);
+  assert.throws(
+    () => llingLlang.scalarWfst(complete, { unitDomain: "utf16" }),
+    /unknown unit domain/,
+  );
+  assert.throws(
+    () => llingLlang.scalarWfst(complete, { weightDomain: "mystery" }),
+    /unknown weight domain/,
+  );
+  assert.throws(() => llingLlang.scalarWfst(complete, { lazy: 1 }), /lazy must be boolean/);
+  assert.throws(() => llingLlang.scalarWfst(complete, { acyclic: "yes" }), /acyclic must be boolean/);
+
+  const cases = [
+    {
+      name: "number start state",
+      provider: { ...complete, startState: () => 0 },
+      invoke: (wfst) => wfst.start(),
+    },
+    {
+      name: "final invalid state",
+      provider: {
+        ...complete,
+        stateInfo: () => ({ valid: false, final: true, finalWeight: 0 }),
+      },
+      invoke: (wfst) => wfst.state(0n),
+    },
+    {
+      name: "multi-scalar label",
+      provider: {
+        ...complete,
+        stateArcs: () => [{ input: "ab", output: null, target: 1n, weight: 0 }],
+      },
+      invoke: (wfst) => wfst.state(0n),
+    },
+    {
+      name: "non-bigint target",
+      provider: {
+        ...complete,
+        stateArcs: () => [{ input: "a", output: null, target: 1, weight: 0 }],
+      },
+      invoke: (wfst) => wfst.state(0n),
+    },
+    {
+      name: "NaN weight",
+      provider: {
+        ...complete,
+        stateArcs: () => [{ input: "a", output: null, target: 1n, weight: Number.NaN }],
+      },
+      invoke: (wfst) => wfst.state(0n),
+    },
+    {
+      name: "non-progressing page",
+      provider: {
+        ...complete,
+        stateArcsPage: () => ({ arcs: [], total: 1n }),
+      },
+      invoke: (wfst) => wfst.state(0n),
+    },
+    {
+      name: "inconsistent page total",
+      provider: {
+        ...complete,
+        stateArcsPage: (_state, start, capacity) => ({
+          arcs: Array.from(
+            { length: start === 0n ? capacity : 1 },
+            () => ({ input: "a", output: null, target: 1n, weight: 0 }),
+          ),
+          total: start === 0n ? 257n : 258n,
+        }),
+      },
+      invoke: (wfst) => wfst.state(0n),
+    },
+  ];
+  for (const { name, provider, invoke } of cases) {
+    const wfst = llingLlang.scalarWfst(provider);
+    try {
+      assert.throws(() => invoke(wfst), Error, name);
+    } finally {
+      wfst.close();
+    }
+  }
+});
+
+test("native JavaScript WFST provider failures and reentrancy remain contained", () => {
+  let throwStart = true;
+  const throwing = linearHostWfstProvider();
+  throwing.startState = () => {
+    if (throwStart) throw new Error("provider-private failure");
+    return 0n;
+  };
+  const recoverable = llingLlang.scalarWfst(throwing);
+  assert.throws(() => recoverable.start(), /callback failed/);
+  throwStart = false;
+  assert.equal(recoverable.start(), 0n, "the callback gate must clear after an exception");
+  recoverable.close();
+
+  const reentrantProvider = linearHostWfstProvider();
+  const plainStateInfo = reentrantProvider.stateInfo;
+  let reentrant;
+  reentrantProvider.stateInfo = (state) => {
+    reentrant.state(state);
+    return plainStateInfo(state);
+  };
+  reentrant = llingLlang.scalarWfst(reentrantProvider);
+  assert.throws(() => reentrant.state(0n), /state_info callback failed/);
+  reentrantProvider.stateInfo = plainStateInfo;
+  assert.equal(reentrant.state(0n).valid, true, "reentrancy rejection must not poison the resource");
+  reentrant.close();
+
+  const selfClosingProvider = linearHostWfstProvider();
+  let selfClosing;
+  selfClosingProvider.startState = () => {
+    selfClosing.close();
+    return 0n;
+  };
+  selfClosing = llingLlang.scalarWfst(selfClosingProvider);
+  assert.equal(selfClosing.start(), 0n, "the active callback retains its context through self-close");
+  assert.throws(() => selfClosing.start(), /closed/);
+});

@@ -45,6 +45,18 @@ query cursors, scalar weighted finite-state transducers (WFSTs), edit-distance
 functions, and deterministic close operations. Backend-specific code may
 change marshalling, never observable query or snapshot semantics.
 
+Host-defined JavaScript WFSTs use one semantic contract with three ownership
+strategies. Node-API holds a strong N-API reference and schedules off-thread
+cleanup through a per-resource thread-safe function. Browser WebAssembly roots
+the provider in a WebAssembly-owned context. WASI passes an index-plus-generation
+handle to imported functions and copies bounded pages through linear memory.
+Raw vtable pointers stay within their native or WebAssembly address space.
+
+Before entering host code, the consumer captures one resource retain and drops
+the global WASI handle-table guard. Provider callbacks consequently run under
+no Vinary Tree registry lock. Per-provider callback gates reject recursion
+immediately instead of blocking the event loop.
+
 ## Native SDK seam
 
 The N-API addon does not traverse sibling repositories. The local or release
@@ -97,5 +109,9 @@ producing $`D_{i+1}`$ and later revisions.
 - WASI pointers and lengths are validated before creating Rust slices.
 - Published native addons are stripped after tests; local release builds retain
   symbols until staging so profilers remain useful.
+- JavaScript provider exceptions become `ProviderError`; malformed results are
+  rejected before any output page becomes visible.
+- WASI provider handles combine slot and generation, so a stale handle cannot
+  alias a newly registered provider after slot reuse.
 - Registry artifacts contain generated binaries and facade code, not local
   source paths or the development-only Cargo patch overlay.

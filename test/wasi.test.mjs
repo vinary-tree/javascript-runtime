@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { createWasiRuntime } from "../wasi-runtime.mjs";
 
@@ -11,7 +11,9 @@ function values(cursor) {
 }
 
 test("WASI persistent ARTrie checkpoints, reopens, and retains query snapshots", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "vinary-tree-wasi-"));
+  const scratch = fileURLToPath(new URL("../.build/wasi-tests", import.meta.url));
+  await mkdir(scratch, { recursive: true });
+  const directory = await mkdtemp(join(scratch, "persistent-artrie-"));
   try {
     const runtime = await createWasiRuntime({ preopens: { "/data": directory } });
     let dictionary = runtime.libdictenstein.createPersistentARTrie("/data/words.artrie");
@@ -239,4 +241,206 @@ test("WASI duallity snapshots compose with lling-llang in the same instance", as
   }
   assert.equal(accepted, true);
   composed.close();
+});
+
+function linearHostWfstProvider({ paged = false, labels = [["c", "C"], ["a", "A"], ["t", "T"]] } = {}) {
+  const outgoing = labels.map(([input, output], index) => [{
+    input,
+    output,
+    target: BigInt(index + 1),
+    weight: 0,
+  }]);
+  outgoing.push([]);
+  const pageCalls = [];
+  const provider = {
+    pageCalls,
+    startState: () => 0n,
+    stateCount: () => BigInt(outgoing.length),
+    stateInfo: (state) => ({
+      valid: state >= 0n && state < BigInt(outgoing.length),
+      final: state === BigInt(outgoing.length - 1),
+      finalWeight: 0,
+    }),
+    stateArcs: (state) => outgoing[Number(state)] ?? [],
+  };
+  if (paged) {
+    provider.stateArcsPage = (state, start, capacity) => {
+      pageCalls.push({ state, start, capacity });
+      const arcs = outgoing[Number(state)] ?? [];
+      const first = Number(start);
+      return { arcs: arcs.slice(first, first + capacity), total: BigInt(arcs.length) };
+    };
+    provider.stateArcs = () => {
+      throw new Error("paged providers must not materialize their complete arc list");
+    };
+  }
+  return provider;
+}
+
+test("WASI host WFST providers page, compose, retain, and dispose", async () => {
+  const runtime = await createWasiRuntime({ preopens: {} });
+  const provider = linearHostWfstProvider({ paged: true });
+  const uppercase = runtime.llingLlang.scalarWfst(provider, {
+    unitDomain: "unicode",
+    weightDomain: "tropical-f64",
+    acyclic: true,
+  });
+  assert.equal(uppercase.unitDomain, "unicode");
+  assert.equal(uppercase.weightDomain, "tropical-f64");
+  assert.equal(uppercase.start(), 0n);
+  assert.deepEqual(uppercase.state(0n), {
+    valid: true,
+    final: false,
+    finalWeight: 0,
+    arcs: [{ input: "c", output: "C", target: 1n, weight: 0 }],
+  });
+  assert.ok(provider.pageCalls.length > 0);
+  assert.equal(provider.pageCalls.every(({ capacity }) => capacity <= 256), true);
+
+  const dictionary = runtime.libdictenstein.dynamicDawg();
+  dictionary.put("cat", 1n);
+  const edit = runtime.duallity.wfst(dictionary, "cat", 0);
+  const composed = runtime.llingLlang.compose(edit, uppercase);
+  dictionary.close();
+  edit.close();
+  uppercase.close();
+  uppercase.close();
+
+  const pending = [[composed.start(), ""]];
+  const seen = new Set();
+  let accepted = false;
+  while (pending.length > 0) {
+    const [state, output] = pending.pop();
+    const key = `${state}:${output}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const expanded = composed.state(state);
+    if (expanded.final && output === "CAT") accepted = true;
+    for (const arc of expanded.arcs) pending.push([arc.target, output + (arc.output ?? "")]);
+  }
+  assert.equal(accepted, true, "composition must retain the provider after its source closes");
+  composed[Symbol.dispose]();
+  assert.throws(() => composed.start(), /closed/);
+  assert.doesNotThrow(() => composed[Symbol.dispose]());
+});
+
+test("WASI host WFST providers preserve byte and u64 labels", async () => {
+  const runtime = await createWasiRuntime({ preopens: {} });
+  for (const [unitDomain, label] of [["byte", 255], ["u64", (1n << 63n) + 17n]]) {
+    const wfst = runtime.llingLlang.scalarWfst(
+      linearHostWfstProvider({ labels: [[label, label]] }),
+      { unitDomain },
+    );
+    try {
+      const [arc] = wfst.state(0n).arcs;
+      assert.equal(wfst.unitDomain, unitDomain);
+      assert.equal(arc.input, label);
+      assert.equal(arc.output, label);
+    } finally {
+      wfst.close();
+    }
+  }
+});
+
+test("WASI host WFST providers contain malformed, throwing, and reentrant callbacks", async () => {
+  const runtime = await createWasiRuntime({ preopens: {} });
+  const complete = linearHostWfstProvider();
+  assert.throws(() => runtime.llingLlang.scalarWfst(null), /must be an object/);
+  assert.throws(
+    () => runtime.llingLlang.scalarWfst({ ...complete, stateInfo: null }),
+    /stateInfo/,
+  );
+  assert.throws(() => runtime.llingLlang.scalarWfst(complete, null), /options must be an object/);
+  assert.throws(
+    () => runtime.llingLlang.scalarWfst(complete, { unitDomain: "utf16" }),
+    /unknown unit domain/,
+  );
+
+  const malformed = [
+    [{ ...complete, startState: () => 0 }, (wfst) => wfst.start()],
+    [{
+      ...complete,
+      stateInfo: () => ({ valid: false, final: true, finalWeight: 0 }),
+    }, (wfst) => wfst.state(0n)],
+    [{
+      ...complete,
+      stateArcs: () => [{ input: "ab", output: null, target: 1n, weight: 0 }],
+    }, (wfst) => wfst.state(0n)],
+    [{
+      ...complete,
+      stateArcsPage: () => ({ arcs: [], total: 1n }),
+    }, (wfst) => wfst.state(0n)],
+    [{
+      ...complete,
+      stateArcsPage: (_state, start, capacity) => ({
+        arcs: Array.from(
+          { length: start === 0n ? capacity : 1 },
+          () => ({ input: "a", output: null, target: 1n, weight: 0 }),
+        ),
+        total: start === 0n ? 257n : 258n,
+      }),
+    }, (wfst) => wfst.state(0n)],
+  ];
+  for (const [provider, invoke] of malformed) {
+    const wfst = runtime.llingLlang.scalarWfst(provider);
+    try {
+      assert.throws(() => invoke(wfst), Error);
+    } finally {
+      wfst.close();
+    }
+  }
+
+  let throwStart = true;
+  const throwing = linearHostWfstProvider();
+  throwing.startState = () => {
+    if (throwStart) throw new Error("provider-private failure");
+    return 0n;
+  };
+  const recoverable = runtime.llingLlang.scalarWfst(throwing);
+  assert.throws(() => recoverable.start(), /ProviderError/);
+  throwStart = false;
+  assert.equal(recoverable.start(), 0n);
+  recoverable.close();
+
+  const reentrantProvider = linearHostWfstProvider();
+  const plainStateInfo = reentrantProvider.stateInfo;
+  let reentrant;
+  reentrantProvider.stateInfo = (state) => {
+    reentrant.state(state);
+    return plainStateInfo(state);
+  };
+  reentrant = runtime.llingLlang.scalarWfst(reentrantProvider);
+  assert.throws(() => reentrant.state(0n), /ProviderError/);
+  reentrantProvider.stateInfo = plainStateInfo;
+  assert.equal(reentrant.state(0n).valid, true, "reentrancy rejection must not poison the handle");
+  reentrant.close();
+
+  const selfClosingProvider = linearHostWfstProvider();
+  let selfClosing;
+  selfClosingProvider.startState = () => {
+    selfClosing.close();
+    return 0n;
+  };
+  selfClosing = runtime.llingLlang.scalarWfst(selfClosingProvider);
+  assert.equal(selfClosing.start(), 0n, "the active guest capture must outlive source close");
+  assert.throws(() => selfClosing.start(), /closed/);
+});
+
+test("WASI host provider generations cannot alias recycled slots", async () => {
+  const runtime = await createWasiRuntime({ preopens: {} });
+  let retiredCalls = 0;
+  const retired = linearHostWfstProvider({ labels: [["x", "x"]] });
+  const retiredState = retired.stateInfo;
+  retired.stateInfo = (state) => {
+    retiredCalls += 1;
+    return retiredState(state);
+  };
+  const oldWfst = runtime.llingLlang.scalarWfst(retired);
+  oldWfst.close();
+  for (let index = 0; index < 4096; index += 1) {
+    const current = runtime.llingLlang.scalarWfst(linearHostWfstProvider({ labels: [["y", "y"]] }));
+    assert.equal(current.state(0n).arcs[0].input, "y");
+    current.close();
+  }
+  assert.equal(retiredCalls, 0, "recycled generational handles must never dispatch to retired providers");
 });

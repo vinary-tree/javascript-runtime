@@ -1,6 +1,10 @@
 import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import {
+  assertScalarWfstProvider,
+  normalizeScalarWfstProviderOptions,
+} from "@vinary-tree/vinary-tree-interop";
 
 const require = createRequire(import.meta.url);
 const platform = `${process.platform}-${process.arch}`;
@@ -47,6 +51,8 @@ const weightDomains = new Map([
   [1, "tropical-f64"], [2, "log-f64"], [3, "probability-f64"], [4, "arctic-f64"],
   [5, "signed-tropical-f64"], [6, "count-f64"], [7, "boolean-f64"],
 ]);
+const unitDomains = new Map(Array.from(domains, ([name, value]) => [value, name]));
+const weightDomainValues = new Map(Array.from(weightDomains, ([value, name]) => [name, value]));
 
 function select(table, value, kind) {
   const selected = table.get(value);
@@ -60,6 +66,23 @@ function cacheLimit(value, fallback, name) {
     throw new RangeError(`${name} must be an integer from 0 through 4294967295`);
   }
   return selected;
+}
+
+function requireScalarWfstProvider(provider) {
+  assertScalarWfstProvider(provider);
+  return provider;
+}
+
+function hostWfstOptions(options) {
+  const { unitDomain, weightDomain, lazy, acyclic } = normalizeScalarWfstProviderOptions(options);
+  let flags = 0;
+  if (lazy) flags |= 4;
+  if (acyclic) flags |= 8;
+  return [
+    select(domains, unitDomain, "unit domain"),
+    select(weightDomainValues, weightDomain, "weight domain"),
+    flags,
+  ];
 }
 
 class DictionaryEntryCursor {
@@ -429,6 +452,12 @@ class Wfst {
     if (name === undefined) throw new Error(`unknown WFST weight domain ${value}`);
     return name;
   }
+  get unitDomain() {
+    const value = ffi.wfstUnitDomain(this._handle);
+    const name = unitDomains.get(value);
+    if (name === undefined) throw new Error(`unknown WFST unit domain ${value}`);
+    return name;
+  }
   start() { return ffi.wfstStart(this._handle); }
   state(state) { return ffi.wfstState(this._handle, state); }
   close() {
@@ -437,6 +466,7 @@ class Wfst {
       this.#handle = null;
     }
   }
+  [Symbol.dispose]() { this.close(); }
 }
 
 class WfstBuilder {
@@ -469,6 +499,7 @@ class WfstBuilder {
       this.#handle = null;
     }
   }
+  [Symbol.dispose]() { this.close(); }
 }
 
 const libdictenstein = Object.freeze({
@@ -508,6 +539,12 @@ const liblevenshtein = Object.freeze({
 const llingLlang = Object.freeze({
   runtimeIdentity,
   vectorWfst() { return new WfstBuilder(); },
+  scalarWfst(provider, options = {}) {
+    const [unitDomain, weightDomain, flags] = hostWfstOptions(options);
+    return new Wfst(ffi.hostWfstNew(
+      requireScalarWfstProvider(provider), unitDomain, weightDomain, flags,
+    ));
+  },
   compose(first, second) {
     if (first?.runtimeIdentity !== runtimeIdentity || second?.runtimeIdentity !== runtimeIdentity) {
       throw new TypeError("WFST belongs to a different Vinary Tree runtime");

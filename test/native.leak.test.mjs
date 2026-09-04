@@ -53,6 +53,31 @@ function assertSteady(label, cycle) {
   );
 }
 
+async function settledAfterFinalizers() {
+  for (let index = 0; index < 8; index += 1) {
+    global.gc();
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  return process.memoryUsage();
+}
+
+async function assertFinalizerSteady(label, cycle) {
+  requireGc();
+  for (let index = 0; index < WARMUP; index += 1) cycle();
+  const base = await settledAfterFinalizers();
+  for (let index = 0; index < CYCLES; index += 1) cycle();
+  const end = await settledAfterFinalizers();
+  const growth = { heap: end.heapUsed - base.heapUsed, external: end.external - base.external };
+  assert.ok(
+    growth.heap < MAX_HEAP_GROWTH,
+    `${label}: heap grew ${growth.heap} bytes over ${CYCLES} finalized cycles`,
+  );
+  assert.ok(
+    growth.external < MAX_EXTERNAL_GROWTH,
+    `${label}: external grew ${growth.external} bytes over ${CYCLES} finalized cycles`,
+  );
+}
+
 const ENTRIES = [
   ["cat", 1n],
   ["cot", 2n],
@@ -122,6 +147,25 @@ function buildSmallWfst() {
   return wfst;
 }
 
+function buildHostWfst() {
+  const provider = {
+    startState: () => 0n,
+    stateCount: () => 2n,
+    stateInfo: (state) => ({ valid: state <= 1n, final: state === 1n, finalWeight: 0 }),
+    stateArcs: (state) => state === 0n
+      ? [{ input: "a", output: "a", target: 1n, weight: 0 }]
+      : [],
+    stateArcsPage(state, start, capacity) {
+      const arcs = this.stateArcs(state);
+      return {
+        arcs: arcs.slice(Number(start), Number(start) + capacity),
+        total: BigInt(arcs.length),
+      };
+    },
+  };
+  return llingLlang.scalarWfst(provider, { acyclic: true });
+}
+
 test("lling-llang vector WFST build cycle reaches memory steady state", () => {
   assertSteady("vectorWfst", () => {
     const builder = llingLlang.vectorWfst();
@@ -146,6 +190,35 @@ test("lling-llang WFST composition cycle reaches memory steady state", () => {
     composed.close();
     first.close();
     second.close();
+  });
+});
+
+test("JavaScript-provided WFST close cycle reaches memory steady state", () => {
+  assertSteady("hostWfst", () => {
+    const wfst = buildHostWfst();
+    wfst.state(wfst.start());
+    wfst.close();
+  });
+});
+
+test("JavaScript-provided WFST finalizers release rooted providers", async () => {
+  await assertFinalizerSteady("hostWfstFinalizer", () => {
+    const wfst = buildHostWfst();
+    wfst.state(wfst.start());
+    // Deliberately rely on the N-API external finalizer. The settling GC in
+    // `measure` must reclaim both the native context and its rooted provider.
+  });
+});
+
+test("composed JavaScript-provided WFST snapshots reach memory steady state", () => {
+  assertSteady("hostWfstComposition", () => {
+    const host = buildHostWfst();
+    const native = buildSmallWfst();
+    const composed = llingLlang.compose(host, native);
+    host.close();
+    native.close();
+    composed.state(composed.start());
+    composed.close();
   });
 });
 

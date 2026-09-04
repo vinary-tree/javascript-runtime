@@ -7,11 +7,11 @@ merely reporting that the umbrella package failed.
 |---|---|---|
 | Version contract | `npm run verify:version` | npm, Rust, test package, exact dependency train, and `next` agree |
 | Rust adapter | `cargo test --manifest-path rust/Cargo.toml --all-targets` | Browser/WASI adapter compiles against the selected family sources |
-| Browser WASM | `npm test` after `npm run build:wasm` | Snapshot, collection, WFST, and query behavior |
+| Browser WASM | `npm test` after `npm run build:wasm` | Snapshot, collection, query, built-in WFST, and host-provider behavior |
 | Node native | `npm run test:native` | N-API surface and TypeScript declaration parity |
 | Native lifetime | `npm run test:leak` | 10,000-cycle resource steady-state checks |
 | Native properties | `npm run test:property` | Deterministic fast-check oracles for distance, matching, values, and WFSTs |
-| WASI | `npm run build:wasi && npm test` | Linear-memory ABI and persistent ARTrie preopen behavior |
+| WASI | `npm run build:wasi && npm test` | Linear-memory ABI, generational host providers, and persistent ARTrie preopen behavior |
 | Package contents | `npm run verify:package` | Native loaders, browser WASM, WASI, and declarations present; source-only files absent |
 
 ## Local sequence
@@ -48,3 +48,10 @@ M(D,q,k)=\{t\in D\mid d_{\mathrm{Lev}}(q,t)\le k\}.
 The suite also pins threshold equivalence, order monotonicity, the complete
 unsigned 64-bit value range, and deterministic WFST construction. Fixed seeds
 and committed examples make every failure reproducible.
+
+The host-provider suites cover method and option validation, byte/Unicode/u64
+labels, bounded paging, totals that change between pages, pages that make no
+progress, NaN and wrong-type fields, thrown exceptions followed by recovery,
+recursive callback attempts, source close during an active call, retained
+composition snapshots, idempotent disposal, 4,096 WASI slot-reuse cycles, and
+10,000-cycle native memory steady state.

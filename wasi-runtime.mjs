@@ -1,5 +1,9 @@
 import { readFile } from "node:fs/promises";
 import { WASI } from "node:wasi";
+import {
+  assertScalarWfstProvider,
+  normalizeScalarWfstProviderOptions,
+} from "@vinary-tree/vinary-tree-interop";
 
 const FAILURE = 0xffff_ffff;
 const RECORD_SIZE = 32;
@@ -31,6 +35,147 @@ const WEIGHT_DOMAINS = new Map([
   [1, "tropical-f64"], [2, "log-f64"], [3, "probability-f64"], [4, "arctic-f64"],
   [5, "signed-tropical-f64"], [6, "count-f64"], [7, "boolean-f64"],
 ]);
+const WFST_UNIT_DOMAINS = new Map([["byte", 1], ["unicode", 2], ["u64", 3]]);
+const WFST_UNIT_DOMAIN_NAMES = new Map(Array.from(WFST_UNIT_DOMAINS, ([name, value]) => [value, name]));
+const WEIGHT_DOMAIN_VALUES = new Map(Array.from(WEIGHT_DOMAINS, ([value, name]) => [name, value]));
+const HOST_OK = 0;
+const HOST_INVALID_ARGUMENT = 2;
+const HOST_CLOSED = 6;
+const HOST_LIMIT_EXCEEDED = 7;
+const HOST_PROVIDER_ERROR = 8;
+const HOST_INDEX_MASK = 0xffff;
+const HOST_MAX_COMPONENT = 0xfffe;
+
+class GenerationalProviderTable {
+  #slots = [];
+  #free = [];
+
+  insert(provider, unitDomain) {
+    let index;
+    if (this.#free.length > 0) {
+      index = this.#free.pop();
+    } else {
+      if (this.#slots.length >= HOST_MAX_COMPONENT) {
+        throw new RangeError("WASI host provider table is full");
+      }
+      index = this.#slots.length;
+      this.#slots.push({ generation: 1, provider: null, unitDomain: 0, active: false });
+    }
+    const slot = this.#slots[index];
+    slot.provider = provider;
+    slot.unitDomain = unitDomain;
+    slot.active = false;
+    return ((slot.generation << 16) | (index + 1)) >>> 0;
+  }
+
+  release(handle) {
+    const selected = this.#lookup(handle);
+    if (selected === null) return;
+    const { index, slot } = selected;
+    slot.provider = null;
+    slot.unitDomain = 0;
+    slot.active = false;
+    slot.generation = slot.generation === HOST_MAX_COMPONENT ? 1 : slot.generation + 1;
+    this.#free.push(index);
+  }
+
+  invoke(handle, operation) {
+    const selected = this.#lookup(handle);
+    if (selected === null) return HOST_CLOSED;
+    const { slot } = selected;
+    if (slot.active) return HOST_PROVIDER_ERROR;
+    slot.active = true;
+    try {
+      operation(slot.provider, slot.unitDomain);
+      return HOST_OK;
+    } catch {
+      return HOST_PROVIDER_ERROR;
+    } finally {
+      slot.active = false;
+    }
+  }
+
+  #lookup(handle) {
+    const unsigned = handle >>> 0;
+    const low = unsigned & HOST_INDEX_MASK;
+    const generation = unsigned >>> 16;
+    if (low === 0 || low > HOST_MAX_COMPONENT || generation === 0 || generation > HOST_MAX_COMPONENT) {
+      return null;
+    }
+    const index = low - 1;
+    const slot = this.#slots[index];
+    if (slot === undefined || slot.provider === null || slot.generation !== generation) return null;
+    return { index, slot };
+  }
+}
+
+function requireScalarWfstProvider(provider) {
+  assertScalarWfstProvider(provider);
+  return provider;
+}
+
+function hostWfstOptions(options) {
+  const { unitDomain, weightDomain, lazy, acyclic } = normalizeScalarWfstProviderOptions(options);
+  const unitDomainValue = WFST_UNIT_DOMAINS.get(unitDomain);
+  const weightDomainValue = WEIGHT_DOMAIN_VALUES.get(weightDomain);
+  let flags = 2n;
+  if (lazy) flags |= 4n;
+  if (acyclic) flags |= 8n;
+  return {
+    unitDomain: unitDomainValue,
+    weightDomain: weightDomainValue,
+    flags,
+    unitDomainName: unitDomain,
+    weightDomainName: weightDomain,
+  };
+}
+
+function exactU64(value, name) {
+  if (typeof value !== "bigint" || value < 0n || value > 0xffff_ffff_ffff_ffffn) {
+    throw new RangeError(`${name} must be an unsigned 64-bit bigint`);
+  }
+  return value;
+}
+
+function exactNumber(value, name) {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    throw new TypeError(`${name} must be a non-NaN number`);
+  }
+  return value;
+}
+
+function providerLabel(value, unitDomain) {
+  if (value === null) return [0n, 0];
+  if (unitDomain === 1) {
+    if (!Number.isInteger(value) || value < 0 || value > 255) {
+      throw new RangeError("byte WFST labels must be integers from 0 through 255 or null");
+    }
+    return [BigInt(value), 1];
+  }
+  if (unitDomain === 2) {
+    if (typeof value !== "string" || [...value].length !== 1) {
+      throw new TypeError("Unicode WFST labels must contain one scalar or be null");
+    }
+    return [BigInt(value.codePointAt(0)), 1];
+  }
+  return [exactU64(value, "u64 WFST label"), 1];
+}
+
+function providerArc(value, unitDomain) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("WFST arc must be an object");
+  }
+  const [input, hasInput] = providerLabel(value.input, unitDomain);
+  const [output, hasOutput] = providerLabel(value.output, unitDomain);
+  return {
+    input,
+    output,
+    target: exactU64(value.target, "WFST arc target"),
+    weight: exactNumber(value.weight, "WFST arc weight"),
+    hasInput,
+    hasOutput,
+  };
+}
 
 /** Instantiate an isolated WASI runtime with explicit guest-to-host preopens. */
 export async function createWasiRuntime({
@@ -40,9 +185,111 @@ export async function createWasiRuntime({
   const wasi = new WASI({ version: "preview1", args: [], env: {}, preopens });
   const source = wasm instanceof WebAssembly.Module ? wasm : await readFile(wasm);
   const module = source instanceof WebAssembly.Module ? source : await WebAssembly.compile(source);
-  const instance = await WebAssembly.instantiate(module, wasi.getImportObject());
+  const providers = new GenerationalProviderTable();
+  let ffi;
+  const memoryView = () => new DataView(ffi.memory.buffer);
+  const host = {
+    host_provider_release(handle) {
+      providers.release(handle);
+    },
+    host_provider_start(handle, outputPointer) {
+      return providers.invoke(handle, (provider) => {
+        const state = exactU64(provider.startState(), "WFST start state");
+        memoryView().setBigUint64(outputPointer, state, true);
+      });
+    },
+    host_provider_num_states(handle, countPointer, knownPointer) {
+      return providers.invoke(handle, (provider) => {
+        const count = provider.stateCount();
+        const memory = memoryView();
+        if (count === null) {
+          memory.setUint32(countPointer, 0, true);
+          memory.setUint8(knownPointer, 0);
+          return;
+        }
+        const exact = exactU64(count, "WFST state count");
+        if (exact > 0xffff_ffffn) throw new RangeError("WASI WFST state count exceeds u32");
+        memory.setUint32(countPointer, Number(exact), true);
+        memory.setUint8(knownPointer, 1);
+      });
+    },
+    host_provider_state_info(handle, state, validPointer, finalPointer, weightPointer) {
+      return providers.invoke(handle, (provider) => {
+        const value = provider.stateInfo(state);
+        if (value === null || typeof value !== "object" || Array.isArray(value)) {
+          throw new TypeError("WFST stateInfo must return an object");
+        }
+        if (typeof value.valid !== "boolean" || typeof value.final !== "boolean") {
+          throw new TypeError("WFST state valid and final metadata must be boolean");
+        }
+        if (!value.valid && value.final) {
+          throw new TypeError("an invalid WFST state cannot be final");
+        }
+        const finalWeight = exactNumber(value.finalWeight, "WFST final weight");
+        const memory = memoryView();
+        memory.setUint8(validPointer, Number(value.valid));
+        memory.setUint8(finalPointer, Number(value.final));
+        memory.setFloat64(weightPointer, finalWeight, true);
+      });
+    },
+    host_provider_state_arcs(
+      handle,
+      state,
+      start,
+      arcsPointer,
+      capacity,
+      writtenPointer,
+      totalPointer,
+    ) {
+      return providers.invoke(handle, (provider, unitDomain) => {
+        let values;
+        let total;
+        if (provider.stateArcsPage === undefined) {
+          const all = provider.stateArcs(state);
+          if (!Array.isArray(all)) throw new TypeError("WFST stateArcs must return an array");
+          total = all.length;
+          values = all.slice(start, start + capacity);
+        } else {
+          const page = provider.stateArcsPage(state, BigInt(start), capacity);
+          if (page === null || typeof page !== "object" || Array.isArray(page)) {
+            throw new TypeError("WFST stateArcsPage must return an object");
+          }
+          if (!Array.isArray(page.arcs)) throw new TypeError("WFST arc page must contain an array");
+          const exactTotal = exactU64(page.total, "WFST arc-page total");
+          if (exactTotal > 0xffff_ffffn) throw new RangeError("WASI WFST arc count exceeds u32");
+          total = Number(exactTotal);
+          values = page.arcs;
+        }
+        const arcs = values.map((arc) => providerArc(arc, unitDomain));
+        if (
+          start > total
+          || arcs.length > capacity
+          || start + arcs.length > total
+          || (capacity !== 0 && arcs.length === 0 && start < total)
+        ) {
+          throw new RangeError("WFST provider returned invalid arc paging");
+        }
+        const memory = memoryView();
+        for (const [index, arc] of arcs.entries()) {
+          const record = arcsPointer + index * 40;
+          memory.setBigUint64(record, arc.input, true);
+          memory.setBigUint64(record + 8, arc.output, true);
+          memory.setBigUint64(record + 16, arc.target, true);
+          memory.setFloat64(record + 24, arc.weight, true);
+          memory.setUint8(record + 32, arc.hasInput);
+          memory.setUint8(record + 33, arc.hasOutput);
+          for (let reserved = 34; reserved < 40; reserved += 1) memory.setUint8(record + reserved, 0);
+        }
+        memory.setUint32(writtenPointer, arcs.length, true);
+        memory.setUint32(totalPointer, total, true);
+      });
+    },
+  };
+  const imports = wasi.getImportObject();
+  imports.vinary_tree_host = host;
+  const instance = await WebAssembly.instantiate(module, imports);
   wasi.initialize(instance);
-  const ffi = instance.exports;
+  ffi = instance.exports;
   const runtimeIdentity = Object.freeze({ implementation: "vinary-tree-wasi-preview1-v1", instance });
 
   function view() { return new DataView(ffi.memory.buffer); }
@@ -542,6 +789,12 @@ export async function createWasiRuntime({
       if (name === undefined) throw new Error(`unknown WFST weight domain ${value}`);
       return name;
     }
+    get unitDomain() {
+      const value = failure(ffi.vt_wfst_unit_domain(this._handle));
+      const name = WFST_UNIT_DOMAIN_NAMES.get(value);
+      if (name === undefined) throw new Error(`unknown WFST unit domain ${value}`);
+      return name;
+    }
     start() {
       const output = ffi.vt_alloc(8);
       try {
@@ -555,17 +808,25 @@ export async function createWasiRuntime({
       if (typeof state !== "bigint" || state < 0n || state > 0xffff_ffff_ffff_ffffn) {
         throw new RangeError("WFST state must be an unsigned 64-bit bigint");
       }
-      const count = failure(ffi.vt_wfst_state(this._handle, state));
-      const pointer = failure(ffi.vt_wfst_state_pointer(this._handle));
+      const unitDomain = this.unitDomain;
+      const handle = this._handle;
+      const count = failure(ffi.vt_wfst_state(handle, state));
+      const pointer = failure(ffi.vt_wfst_state_pointer(handle));
       const memory = view();
       const arcs = [];
+      const label = (raw, present) => {
+        if (!present) return null;
+        if (unitDomain === "byte") return Number(raw);
+        if (unitDomain === "unicode") return String.fromCodePoint(Number(raw));
+        return raw;
+      };
       for (let index = 0; index < count; index += 1) {
         const record = pointer + 16 + index * 40;
         const hasInput = memory.getUint32(record + 32, true) !== 0;
         const hasOutput = memory.getUint32(record + 36, true) !== 0;
         arcs.push({
-          input: hasInput ? String.fromCodePoint(Number(memory.getBigUint64(record, true))) : null,
-          output: hasOutput ? String.fromCodePoint(Number(memory.getBigUint64(record + 8, true))) : null,
+          input: label(memory.getBigUint64(record, true), hasInput),
+          output: label(memory.getBigUint64(record + 8, true), hasOutput),
           target: memory.getBigUint64(record + 16, true),
           weight: memory.getFloat64(record + 24, true),
         });
@@ -583,6 +844,7 @@ export async function createWasiRuntime({
         this.#handle = 0;
       }
     }
+    [Symbol.dispose]() { this.close(); }
   }
 
   class WfstBuilder {
@@ -620,6 +882,7 @@ export async function createWasiRuntime({
         this.#handle = 0;
       }
     }
+    [Symbol.dispose]() { this.close(); }
   }
 
   const libdictenstein = Object.freeze({
@@ -655,6 +918,22 @@ export async function createWasiRuntime({
   const llingLlang = Object.freeze({
     runtimeIdentity,
     vectorWfst() { return new WfstBuilder(); },
+    scalarWfst(provider, options = {}) {
+      const validated = requireScalarWfstProvider(provider);
+      const selected = hostWfstOptions(options);
+      const hostHandle = providers.insert(validated, selected.unitDomain);
+      const guestHandle = ffi.vt_host_wfst_new(
+        hostHandle,
+        selected.unitDomain,
+        selected.weightDomain,
+        selected.flags,
+      );
+      if ((guestHandle >>> 0) === FAILURE) {
+        providers.release(hostHandle);
+        failure(guestHandle);
+      }
+      return new Wfst(guestHandle);
+    },
     compose(first, second) {
       if (first?.runtimeIdentity !== runtimeIdentity || second?.runtimeIdentity !== runtimeIdentity) {
         throw new TypeError("WFST belongs to a different Vinary Tree runtime");

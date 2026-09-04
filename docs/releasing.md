@@ -9,11 +9,11 @@ resolvable.
 ## Release identity
 
 `release/version.json` is authoritative. For this train, every Rust and npm
-coordinate is `4.0.0-rc.5`, and npm publication uses the `next` distribution
+coordinate is `4.0.0-rc.6`, and npm publication uses the `next` distribution
 tag. npm's first-publication behavior assigned `latest` to the inert `0.0.0`
 bootstrap reservation. After the OIDC-published runtime passes installed
 native, WASM, and WASI smoke tests, retarget the new scoped package's `latest`
-pointer to `4.0.0-rc.5`, remove `bootstrap`, and deprecate `0.0.0`.
+pointer to `4.0.0-rc.6`, remove `bootstrap`, and deprecate `0.0.0`.
 The [npm coordinate migration](npm-coordinate-migration.md) records the exact
 identity correction and the compatibility policy for the immutable RC4
 artifacts.
@@ -27,7 +27,7 @@ lockfile. Every component lock must remain byte-for-byte unchanged.
 
 ## Exact-tag workflow protocol
 
-Pushing the annotated `v4.0.0-rc.5` tag creates only the immutable source ref. Release
+Pushing the annotated `v4.0.0-rc.6` tag creates only the immutable source ref. Release
 validation and publication are explicit manual dispatches so the complete
 cross-project tag graph and public prerequisites can be established first.
 
@@ -40,12 +40,12 @@ environment.
 ```bash
 gh workflow run release.yml \
   --repo vinary-tree/javascript-runtime \
-  --ref v4.0.0-rc.5 \
+  --ref v4.0.0-rc.6 \
   -f registry=validate-only
 
 gh workflow run release.yml \
   --repo vinary-tree/javascript-runtime \
-  --ref v4.0.0-rc.5 \
+  --ref v4.0.0-rc.6 \
   -f registry=npm
 ```
 
@@ -91,14 +91,14 @@ all other owner refs from runtime release.2.
 2. Publish `vinary-tree-interop` and verify installation from each supported
    registry coordinate.
 3. Publish `libdictenstein`, `liblevenshtein`, `lling-llang`, and `duallity`
-   crates at `4.0.0-rc.5` in dependency order.
+   crates at `4.0.0-rc.6` in dependency order.
 4. Build the runtime's native prebuild matrix from the exact component tags in
    `release/version.json`; build browser WASM and WASI from the same source map.
 5. Merge the platform artifacts, run package-content and installed-tarball
-   smoke tests, then publish `@vinary-tree/javascript-runtime@4.0.0-rc.5` with
+   smoke tests, then publish `@vinary-tree/javascript-runtime@4.0.0-rc.6` with
    `next`.
 6. Publish project-specific npm facades against that exact runtime.
-7. Publish the unscoped `liblevenshtein@4.0.0-rc.5` compatibility facade with
+7. Publish the unscoped `liblevenshtein@4.0.0-rc.6` compatibility facade with
    `next`; do not change the legacy `latest` tag.
 
 ## Native platform matrix

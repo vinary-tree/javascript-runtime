@@ -1,6 +1,6 @@
 //! Browser/static-WebAssembly exports.
 
-use js_sys::{Array, BigInt, BigUint64Array, Object, Reflect, Uint8Array};
+use js_sys::{Array, BigInt, BigUint64Array, Function, JsString, Object, Reflect, Uint8Array};
 use libdictenstein::bindings::{
     dictionary_algebra, BindingAlgebraOperation, BindingEntries, BindingEntry, BindingTerm,
     BindingUnitDomain, BindingValueMerge, DoubleArrayTrieBinding, DynamicDawgBinding,
@@ -17,13 +17,16 @@ use liblevenshtein::distance::{
 use liblevenshtein::transducer::{Algorithm, QueryCacheLimits};
 use lling_llang::bindings::OwnedWfstResource;
 use lling_llang::prelude::{MutableWfst, TropicalWeight, VectorWfst, Wfst};
+use std::cell::Cell;
 use std::convert::TryFrom;
 use std::ffi::c_void;
 use vinary_tree_interop::{
-    VtResource, VtStatus, VtWeightDomain, VtWfstArc, VtWfstVTable, VT_WFST_INTERFACE_ID,
+    wfst_flags, VtInterfaceId, VtResource, VtResourceVTable, VtStatus, VtUnitDomain,
+    VtWeightDomain, VtWfstArc, VtWfstVTable, VT_ABI_VERSION, VT_WFST_INTERFACE_ID,
     VT_WFST_INTERFACE_VERSION,
 };
 use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
 
 fn error(value: impl std::fmt::Display) -> JsValue {
     js_sys::Error::new(&value.to_string()).into()
@@ -556,8 +559,17 @@ unsafe fn wfst_table(resource: VtResource) -> Result<*const VtWfstVTable, JsValu
     if resource.is_null() {
         return Err(error("WFST resource is null"));
     }
+    let base = &*resource.vtable;
+    if base.struct_size < std::mem::size_of::<VtResourceVTable>()
+        || base.abi_version != VT_ABI_VERSION
+        || base.reserved != 0
+        || base.retain.is_none()
+        || base.release.is_none()
+    {
+        return Err(error("resource has an incompatible base ABI"));
+    }
     let mut interface: *const c_void = std::ptr::null();
-    let query = (*resource.vtable)
+    let query = base
         .query_interface
         .ok_or_else(|| error("resource has no query_interface"))?;
     let status = query(
@@ -569,7 +581,19 @@ unsafe fn wfst_table(resource: VtResource) -> Result<*const VtWfstVTable, JsValu
     if VtStatus::from_raw(status) != Some(VtStatus::Ok) || interface.is_null() {
         return Err(error("resource has no compatible scalar WFST interface"));
     }
-    Ok(interface.cast())
+    let table = interface.cast::<VtWfstVTable>();
+    let table_ref = &*table;
+    if table_ref.struct_size < std::mem::size_of::<VtWfstVTable>()
+        || table_ref.interface_version < VT_WFST_INTERFACE_VERSION
+        || table_ref.reserved != 0
+        || table_ref.snapshot.is_none()
+        || table_ref.start.is_none()
+        || table_ref.state_info.is_none()
+        || table_ref.state_arcs.is_none()
+    {
+        return Err(error("resource has an incompatible scalar WFST interface"));
+    }
+    Ok(table)
 }
 
 fn weight_domain_name(value: VtWeightDomain) -> &'static str {
@@ -584,14 +608,462 @@ fn weight_domain_name(value: VtWeightDomain) -> &'static str {
     }
 }
 
+fn unit_domain_name(value: VtUnitDomain) -> &'static str {
+    match value {
+        VtUnitDomain::Byte => "byte",
+        VtUnitDomain::UnicodeScalar => "unicode",
+        VtUnitDomain::U64 => "u64",
+    }
+}
+
+fn provider_unit_domain(value: &str) -> Result<VtUnitDomain, JsValue> {
+    match value {
+        "byte" => Ok(VtUnitDomain::Byte),
+        "unicode" => Ok(VtUnitDomain::UnicodeScalar),
+        "u64" => Ok(VtUnitDomain::U64),
+        _ => Err(error(format!("unknown unit domain {value}"))),
+    }
+}
+
+fn provider_weight_domain(value: &str) -> Result<VtWeightDomain, JsValue> {
+    match value {
+        "tropical-f64" => Ok(VtWeightDomain::TropicalF64),
+        "log-f64" => Ok(VtWeightDomain::LogF64),
+        "probability-f64" => Ok(VtWeightDomain::ProbabilityF64),
+        "arctic-f64" => Ok(VtWeightDomain::ArcticF64),
+        "signed-tropical-f64" => Ok(VtWeightDomain::SignedTropicalF64),
+        "count-f64" => Ok(VtWeightDomain::CountF64),
+        "boolean-f64" => Ok(VtWeightDomain::BooleanF64),
+        _ => Err(error(format!("unknown weight domain {value}"))),
+    }
+}
+
+struct BrowserWfstProviderContext {
+    retains: Cell<usize>,
+    active: Cell<bool>,
+    provider: JsValue,
+    table: VtWfstVTable,
+}
+
+struct ProviderCallLease(*mut BrowserWfstProviderContext);
+
+impl Drop for ProviderCallLease {
+    fn drop(&mut self) {
+        unsafe {
+            let context = &*self.0;
+            context.active.set(false);
+            browser_wfst_release(self.0.cast());
+        }
+    }
+}
+
+unsafe fn try_retain_browser_wfst(
+    context: *mut BrowserWfstProviderContext,
+) -> Result<(), VtStatus> {
+    if context.is_null() {
+        return Err(VtStatus::NullPointer);
+    }
+    let retains = (*context).retains.get();
+    let next = retains.checked_add(1).ok_or(VtStatus::LimitExceeded)?;
+    (*context).retains.set(next);
+    Ok(())
+}
+
+unsafe fn with_browser_provider<T>(
+    context: *mut c_void,
+    operation: impl FnOnce(&BrowserWfstProviderContext) -> Result<T, ()>,
+) -> Result<T, VtStatus> {
+    let context = context.cast::<BrowserWfstProviderContext>();
+    try_retain_browser_wfst(context)?;
+    if (*context).active.replace(true) {
+        browser_wfst_release(context.cast());
+        return Err(VtStatus::ProviderError);
+    }
+    let lease = ProviderCallLease(context);
+    let result = operation(&*context).map_err(|()| VtStatus::ProviderError);
+    drop(lease);
+    result
+}
+
+fn provider_method(context: &BrowserWfstProviderContext, name: &str) -> Result<Function, ()> {
+    Reflect::get(&context.provider, &JsValue::from_str(name))
+        .map_err(|_| ())?
+        .dyn_into::<Function>()
+        .map_err(|_| ())
+}
+
+fn call_provider(
+    context: &BrowserWfstProviderContext,
+    name: &str,
+    arguments: &[JsValue],
+) -> Result<JsValue, ()> {
+    let method = provider_method(context, name)?;
+    match arguments {
+        [] => method.call0(&context.provider),
+        [first] => method.call1(&context.provider, first),
+        [first, second] => method.call2(&context.provider, first, second),
+        [first, second, third] => method.call3(&context.provider, first, second, third),
+        _ => return Err(()),
+    }
+    .map_err(|_| ())
+}
+
+fn exact_u64(value: &JsValue) -> Result<u64, ()> {
+    if !value.is_bigint() {
+        return Err(());
+    }
+    let value = BigInt::new(value).map_err(|_| ())?;
+    u64::try_from(value).map_err(|_| ())
+}
+
+fn exact_usize(value: &JsValue) -> Result<usize, ()> {
+    usize::try_from(exact_u64(value)?).map_err(|_| ())
+}
+
+fn exact_bool(value: &JsValue) -> Result<bool, ()> {
+    value.as_bool().ok_or(())
+}
+
+fn exact_number(value: &JsValue) -> Result<f64, ()> {
+    let value = value.as_f64().ok_or(())?;
+    if value.is_nan() {
+        Err(())
+    } else {
+        Ok(value)
+    }
+}
+
+fn reflected(value: &JsValue, name: &str) -> Result<JsValue, ()> {
+    Reflect::get(value, &JsValue::from_str(name)).map_err(|_| ())
+}
+
+fn provider_label(value: &JsValue, domain: VtUnitDomain) -> Result<(u64, u8), ()> {
+    if value.is_null() {
+        return Ok((0, 0));
+    }
+    let label = match domain {
+        VtUnitDomain::Byte => {
+            let number = value.as_f64().ok_or(())?;
+            if !number.is_finite() || number.fract() != 0.0 || !(0.0..=255.0).contains(&number) {
+                return Err(());
+            }
+            number as u64
+        }
+        VtUnitDomain::UnicodeScalar => {
+            let string = value.dyn_ref::<JsString>().ok_or(())?;
+            u64::from(u32::from(string.as_char().ok_or(())?))
+        }
+        VtUnitDomain::U64 => exact_u64(value)?,
+    };
+    Ok((label, 1))
+}
+
+fn provider_arc(value: &JsValue, domain: VtUnitDomain) -> Result<VtWfstArc, ()> {
+    if !value.is_object() || value.is_null() || Array::is_array(value) {
+        return Err(());
+    }
+    let (input_label, has_input) = provider_label(&reflected(value, "input")?, domain)?;
+    let (output_label, has_output) = provider_label(&reflected(value, "output")?, domain)?;
+    Ok(VtWfstArc {
+        input_label,
+        output_label,
+        target_state: exact_u64(&reflected(value, "target")?)?,
+        weight: exact_number(&reflected(value, "weight")?)?,
+        has_input,
+        has_output,
+        reserved: [0; 6],
+    })
+}
+
+fn provider_arc_array(value: &JsValue, domain: VtUnitDomain) -> Result<Vec<VtWfstArc>, ()> {
+    if !Array::is_array(value) {
+        return Err(());
+    }
+    Array::from(value)
+        .iter()
+        .map(|arc| provider_arc(&arc, domain))
+        .collect()
+}
+
+unsafe extern "C" fn browser_wfst_retain(context: *mut c_void) {
+    let _ = try_retain_browser_wfst(context.cast());
+}
+
+unsafe extern "C" fn browser_wfst_release(context: *mut c_void) {
+    let context = context.cast::<BrowserWfstProviderContext>();
+    if context.is_null() {
+        return;
+    }
+    let retains = (*context).retains.get();
+    if retains == 0 {
+        return;
+    }
+    if retains == 1 {
+        drop(Box::from_raw(context));
+    } else {
+        (*context).retains.set(retains - 1);
+    }
+}
+
+unsafe extern "C" fn browser_wfst_query_interface(
+    context: *mut c_void,
+    interface_id: *const VtInterfaceId,
+    minimum_version: u32,
+    out_vtable: *mut *const c_void,
+) -> u32 {
+    if context.is_null() || interface_id.is_null() || out_vtable.is_null() {
+        return VtStatus::NullPointer.to_raw();
+    }
+    if (*interface_id).bytes != VT_WFST_INTERFACE_ID.bytes
+        || minimum_version > VT_WFST_INTERFACE_VERSION
+    {
+        return VtStatus::Unsupported.to_raw();
+    }
+    let context = &*context.cast::<BrowserWfstProviderContext>();
+    out_vtable.write((&context.table as *const VtWfstVTable).cast());
+    VtStatus::Ok.to_raw()
+}
+
+unsafe extern "C" fn browser_wfst_snapshot(
+    context: *mut c_void,
+    out_snapshot: *mut VtResource,
+) -> u32 {
+    if out_snapshot.is_null() {
+        return VtStatus::NullPointer.to_raw();
+    }
+    if let Err(status) = try_retain_browser_wfst(context.cast()) {
+        return status.to_raw();
+    }
+    out_snapshot.write(VtResource {
+        context,
+        vtable: &BROWSER_WFST_RESOURCE_VTABLE,
+    });
+    VtStatus::Ok.to_raw()
+}
+
+unsafe extern "C" fn browser_wfst_start(context: *mut c_void, out_state: *mut u64) -> u32 {
+    if out_state.is_null() {
+        return VtStatus::NullPointer.to_raw();
+    }
+    match with_browser_provider(context, |provider| {
+        exact_u64(&call_provider(provider, "startState", &[])?)
+    }) {
+        Ok(state) => {
+            out_state.write(state);
+            VtStatus::Ok.to_raw()
+        }
+        Err(status) => status.to_raw(),
+    }
+}
+
+unsafe extern "C" fn browser_wfst_num_states(
+    context: *mut c_void,
+    out_count: *mut usize,
+    out_known: *mut u8,
+) -> u32 {
+    if out_count.is_null() || out_known.is_null() {
+        return VtStatus::NullPointer.to_raw();
+    }
+    match with_browser_provider(context, |provider| {
+        let value = call_provider(provider, "stateCount", &[])?;
+        if value.is_null() {
+            Ok(None)
+        } else {
+            exact_usize(&value).map(Some)
+        }
+    }) {
+        Ok(count) => {
+            out_count.write(count.unwrap_or_default());
+            out_known.write(u8::from(count.is_some()));
+            VtStatus::Ok.to_raw()
+        }
+        Err(status) => status.to_raw(),
+    }
+}
+
+unsafe extern "C" fn browser_wfst_state_info(
+    context: *mut c_void,
+    state: u64,
+    out_valid: *mut u8,
+    out_is_final: *mut u8,
+    out_final_weight: *mut f64,
+) -> u32 {
+    if out_valid.is_null() || out_is_final.is_null() || out_final_weight.is_null() {
+        return VtStatus::NullPointer.to_raw();
+    }
+    match with_browser_provider(context, |provider| {
+        let value = call_provider(provider, "stateInfo", &[BigInt::from(state).into()])?;
+        if !value.is_object() || value.is_null() || Array::is_array(&value) {
+            return Err(());
+        }
+        let valid = exact_bool(&reflected(&value, "valid")?)?;
+        let is_final = exact_bool(&reflected(&value, "final")?)?;
+        if !valid && is_final {
+            return Err(());
+        }
+        let final_weight = exact_number(&reflected(&value, "finalWeight")?)?;
+        Ok((valid, is_final, final_weight))
+    }) {
+        Ok((valid, is_final, final_weight)) => {
+            out_valid.write(u8::from(valid));
+            out_is_final.write(u8::from(is_final));
+            out_final_weight.write(final_weight);
+            VtStatus::Ok.to_raw()
+        }
+        Err(status) => status.to_raw(),
+    }
+}
+
+unsafe extern "C" fn browser_wfst_state_arcs(
+    context: *mut c_void,
+    state: u64,
+    start: usize,
+    out_arcs: *mut VtWfstArc,
+    capacity: usize,
+    out_written: *mut usize,
+    out_total: *mut usize,
+) -> u32 {
+    if out_written.is_null() || out_total.is_null() || (capacity != 0 && out_arcs.is_null()) {
+        return VtStatus::NullPointer.to_raw();
+    }
+    match with_browser_provider(context, |provider| {
+        let paged = Reflect::get(&provider.provider, &JsValue::from_str("stateArcsPage"))
+            .map_err(|_| ())?;
+        let (arcs, total) = if paged.is_undefined() {
+            let all = provider_arc_array(
+                &call_provider(provider, "stateArcs", &[BigInt::from(state).into()])?,
+                provider.table.unit_domain,
+            )?;
+            let total = all.len();
+            let arcs = all.into_iter().skip(start).take(capacity).collect();
+            (arcs, total)
+        } else {
+            if !paged.is_function() {
+                return Err(());
+            }
+            let value = call_provider(
+                provider,
+                "stateArcsPage",
+                &[
+                    BigInt::from(state).into(),
+                    BigInt::from(start as u64).into(),
+                    JsValue::from_f64(capacity as f64),
+                ],
+            )?;
+            if !value.is_object() || value.is_null() || Array::is_array(&value) {
+                return Err(());
+            }
+            let arcs = provider_arc_array(&reflected(&value, "arcs")?, provider.table.unit_domain)?;
+            let total = exact_usize(&reflected(&value, "total")?)?;
+            (arcs, total)
+        };
+        if start > total
+            || arcs.len() > capacity
+            || start
+                .checked_add(arcs.len())
+                .filter(|end| *end <= total)
+                .is_none()
+            || (capacity != 0 && arcs.is_empty() && start < total)
+        {
+            return Err(());
+        }
+        Ok((arcs, total))
+    }) {
+        Ok((arcs, total)) => {
+            for (index, arc) in arcs.iter().enumerate() {
+                out_arcs.add(index).write(*arc);
+            }
+            out_written.write(arcs.len());
+            out_total.write(total);
+            VtStatus::Ok.to_raw()
+        }
+        Err(status) => status.to_raw(),
+    }
+}
+
+static BROWSER_WFST_RESOURCE_VTABLE: VtResourceVTable = VtResourceVTable {
+    struct_size: std::mem::size_of::<VtResourceVTable>(),
+    abi_version: VT_ABI_VERSION,
+    reserved: 0,
+    retain: Some(browser_wfst_retain),
+    release: Some(browser_wfst_release),
+    query_interface: Some(browser_wfst_query_interface),
+};
+
+struct BrowserOwnedWfstResource(VtResource);
+
+impl BrowserOwnedWfstResource {
+    fn new(
+        provider: JsValue,
+        unit_domain: VtUnitDomain,
+        weight_domain: VtWeightDomain,
+        flags: u64,
+    ) -> Self {
+        let context = Box::new(BrowserWfstProviderContext {
+            retains: Cell::new(1),
+            active: Cell::new(false),
+            provider,
+            table: VtWfstVTable {
+                struct_size: std::mem::size_of::<VtWfstVTable>(),
+                interface_version: VT_WFST_INTERFACE_VERSION,
+                unit_domain,
+                weight_domain,
+                reserved: 0,
+                flags,
+                snapshot: Some(browser_wfst_snapshot),
+                start: Some(browser_wfst_start),
+                num_states: Some(browser_wfst_num_states),
+                state_info: Some(browser_wfst_state_info),
+                state_arcs: Some(browser_wfst_state_arcs),
+            },
+        });
+        Self(VtResource {
+            context: Box::into_raw(context).cast(),
+            vtable: &BROWSER_WFST_RESOURCE_VTABLE,
+        })
+    }
+
+    fn as_raw(&self) -> VtResource {
+        self.0
+    }
+}
+
+impl Drop for BrowserOwnedWfstResource {
+    fn drop(&mut self) {
+        unsafe { browser_wfst_release(self.0.context) }
+    }
+}
+
+enum WfstBackend {
+    Engine(OwnedWfstResource),
+    Browser(BrowserOwnedWfstResource),
+}
+
+impl WfstBackend {
+    fn as_raw(&self) -> VtResource {
+        match self {
+            Self::Engine(resource) => resource.as_raw(),
+            Self::Browser(resource) => resource.as_raw(),
+        }
+    }
+}
+
 /// Immutable scalar WFST shared by the lling-llang and duallity namespaces.
 #[wasm_bindgen(js_name = Wfst)]
 pub struct JsWfst {
-    inner: Option<OwnedWfstResource>,
+    inner: Option<WfstBackend>,
 }
 
 #[wasm_bindgen(js_class = Wfst)]
 impl JsWfst {
+    /// Return the input/output label representation.
+    #[wasm_bindgen(getter, js_name = unitDomain)]
+    pub fn unit_domain(&self) -> Result<String, JsValue> {
+        let resource = self.inner()?.as_raw();
+        let table = unsafe { &*wfst_table(resource)? };
+        Ok(unit_domain_name(table.unit_domain).into())
+    }
+
     /// Return the scalar semiring name.
     #[wasm_bindgen(getter, js_name = weightDomain)]
     pub fn weight_domain(&self) -> Result<String, JsValue> {
@@ -634,37 +1106,54 @@ impl JsWfst {
             },
             "WFST state_info",
         )?;
-        let state_arcs = table
-            .state_arcs
-            .ok_or_else(|| error("WFST vtable has no state_arcs"))?;
+        if valid > 1 || is_final > 1 || (valid == 0 && is_final == 1) || final_weight.is_nan() {
+            return Err(error("WFST provider returned invalid state metadata"));
+        }
         let mut arcs = Vec::<VtWfstArc>::new();
-        let mut offset = 0;
-        loop {
-            let mut page = vec![VtWfstArc::default(); 256];
-            let mut written = 0;
-            let mut total = 0;
-            require_ok(
-                unsafe {
-                    state_arcs(
-                        resource.context,
-                        state,
-                        offset,
-                        page.as_mut_ptr(),
-                        page.len(),
-                        &mut written,
-                        &mut total,
-                    )
-                },
-                "WFST state_arcs",
-            )?;
-            if written > page.len() || offset + written > total || (written == 0 && offset < total)
-            {
-                return Err(error("WFST provider returned invalid arc paging"));
-            }
-            arcs.extend(page.into_iter().take(written));
-            offset += written;
-            if offset == total {
-                break;
+        if valid == 1 {
+            let state_arcs = table
+                .state_arcs
+                .ok_or_else(|| error("WFST vtable has no state_arcs"))?;
+            let mut offset = 0;
+            let mut expected_total = None;
+            loop {
+                let mut page = vec![VtWfstArc::default(); 256];
+                let mut written = 0;
+                let mut total = 0;
+                require_ok(
+                    unsafe {
+                        state_arcs(
+                            resource.context,
+                            state,
+                            offset,
+                            page.as_mut_ptr(),
+                            page.len(),
+                            &mut written,
+                            &mut total,
+                        )
+                    },
+                    "WFST state_arcs",
+                )?;
+                if written > page.len()
+                    || offset
+                        .checked_add(written)
+                        .filter(|end| *end <= total)
+                        .is_none()
+                    || (written == 0 && offset < total)
+                {
+                    return Err(error("WFST provider returned invalid arc paging"));
+                }
+                if expected_total.is_some_and(|expected| expected != total) {
+                    return Err(error(
+                        "WFST provider changed the total arc count while paging",
+                    ));
+                }
+                expected_total = Some(total);
+                arcs.extend(page.into_iter().take(written));
+                offset += written;
+                if offset == total {
+                    break;
+                }
             }
         }
         let result = Object::new();
@@ -674,18 +1163,29 @@ impl JsWfst {
         let output = Array::new();
         for arc in arcs {
             let value = Object::new();
-            let input = if arc.has_input == 0 {
-                JsValue::NULL
-            } else {
-                char::from_u32(arc.input_label as u32)
-                    .map_or(JsValue::NULL, |value| value.to_string().into())
+            let label = |raw: u64, present: u8| -> Result<JsValue, JsValue> {
+                if present == 0 {
+                    return Ok(JsValue::NULL);
+                }
+                if present != 1 {
+                    return Err(error(
+                        "WFST provider returned an invalid label-presence flag",
+                    ));
+                }
+                match table.unit_domain {
+                    VtUnitDomain::Byte => u8::try_from(raw)
+                        .map(|value| JsValue::from_f64(f64::from(value)))
+                        .map_err(|_| error("WFST provider returned an out-of-range byte label")),
+                    VtUnitDomain::UnicodeScalar => u32::try_from(raw)
+                        .ok()
+                        .and_then(char::from_u32)
+                        .map(|value| value.to_string().into())
+                        .ok_or_else(|| error("WFST provider returned an invalid Unicode label")),
+                    VtUnitDomain::U64 => Ok(BigInt::from(raw).into()),
+                }
             };
-            let output_label = if arc.has_output == 0 {
-                JsValue::NULL
-            } else {
-                char::from_u32(arc.output_label as u32)
-                    .map_or(JsValue::NULL, |value| value.to_string().into())
-            };
+            let input = label(arc.input_label, arc.has_input)?;
+            let output_label = label(arc.output_label, arc.has_output)?;
             property(&value, "input", &input)?;
             property(&value, "output", &output_label)?;
             property(&value, "target", &BigInt::from(arc.target_state).into())?;
@@ -703,7 +1203,7 @@ impl JsWfst {
 }
 
 impl JsWfst {
-    fn inner(&self) -> Result<&OwnedWfstResource, JsValue> {
+    fn inner(&self) -> Result<&WfstBackend, JsValue> {
         self.inner.as_ref().ok_or_else(|| error("WFST is closed"))
     }
 }
@@ -808,13 +1308,19 @@ impl JsWfstBuilder {
             return Err(error("WFST has no start state"));
         }
         Ok(JsWfst {
-            inner: Some(OwnedWfstResource::from_wfst(graph)),
+            inner: Some(WfstBackend::Engine(OwnedWfstResource::from_wfst(graph))),
         })
     }
 
     /// Release this builder.
     pub fn close(&mut self) {
         self.graph = None;
+    }
+}
+
+impl Default for JsWfstBuilder {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -830,10 +1336,51 @@ impl JsWfstBuilder {
 #[wasm_bindgen(js_name = composeWfst)]
 pub fn compose_wfst(first: &JsWfst, second: &JsWfst) -> Result<JsWfst, JsValue> {
     Ok(JsWfst {
-        inner: Some(
+        inner: Some(WfstBackend::Engine(
             OwnedWfstResource::compose(first.inner()?.as_raw(), second.inner()?.as_raw())
                 .map_err(error)?,
-        ),
+        )),
+    })
+}
+
+/// Root an immutable JavaScript scalar-WFST provider inside this WebAssembly instance.
+#[wasm_bindgen(js_name = createHostWfst)]
+pub fn create_host_wfst(
+    provider: JsValue,
+    unit_domain: &str,
+    weight_domain: &str,
+    lazy: bool,
+    acyclic: bool,
+) -> Result<JsWfst, JsValue> {
+    if !provider.is_object() || provider.is_null() || Array::is_array(&provider) {
+        return Err(error("scalar WFST provider must be an object"));
+    }
+    for method in ["startState", "stateCount", "stateInfo", "stateArcs"] {
+        let value = Reflect::get(&provider, &JsValue::from_str(method))?;
+        if !value.is_function() {
+            return Err(error(format!("scalar WFST provider is missing {method}()")));
+        }
+    }
+    let optional_page = Reflect::get(&provider, &JsValue::from_str("stateArcsPage"))?;
+    if !optional_page.is_undefined() && !optional_page.is_function() {
+        return Err(error(
+            "scalar WFST provider stateArcsPage must be a function when present",
+        ));
+    }
+    let mut flags = wfst_flags::IMMUTABLE;
+    if lazy {
+        flags |= wfst_flags::LAZY;
+    }
+    if acyclic {
+        flags |= wfst_flags::ACYCLIC;
+    }
+    Ok(JsWfst {
+        inner: Some(WfstBackend::Browser(BrowserOwnedWfstResource::new(
+            provider,
+            provider_unit_domain(unit_domain)?,
+            provider_weight_domain(weight_domain)?,
+            flags,
+        ))),
     })
 }
 
@@ -858,7 +1405,7 @@ pub fn create_duallity_wfst(
     }
     .map_err(error)?;
     Ok(JsWfst {
-        inner: Some(resource),
+        inner: Some(WfstBackend::Engine(resource)),
     })
 }
 
@@ -1171,7 +1718,8 @@ impl JsQueryCursor {
 #[wasm_bindgen(js_class = QueryCursor)]
 impl JsQueryCursor {
     /// Return `{done, value}` for the JavaScript iterator protocol.
-    pub fn next(&mut self) -> Result<JsValue, JsValue> {
+    #[wasm_bindgen(js_name = next)]
+    pub fn next_js(&mut self) -> Result<JsValue, JsValue> {
         let result = Object::new();
         match self.next_match()? {
             Some(value) => {

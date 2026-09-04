@@ -94,6 +94,38 @@ The same ownership rule applies to query cursors, phonetic patterns, rule sets,
 builders, transducers, and WFSTs: prefer `using` or call `close()` in `finally`.
 Garbage collection is exceptional-path containment, not resource scheduling.
 
+## Compose custom JavaScript automata
+
+JavaScript and TypeScript objects can implement immutable scalar WFSTs without
+copying the complete graph into Rust. This example declares a one-transition
+transducer; `null` labels denote epsilon and state IDs remain exact `bigint`
+values:
+
+```js
+const provider = {
+  startState: () => 0n,
+  stateCount: () => 2n,
+  stateInfo: (state) => ({
+    valid: state === 0n || state === 1n,
+    final: state === 1n,
+    finalWeight: 0,
+  }),
+  stateArcs: (state) => state === 0n
+    ? [{ input: "a", output: "A", target: 1n, weight: 0 }]
+    : [],
+};
+
+using uppercaseA = llingLlang.scalarWfst(provider, { acyclic: true });
+using product = llingLlang.compose(existingWfst, uppercaseA);
+```
+
+The same provider contract runs on the native, browser-WebAssembly, and WASI
+entrypoints. High-degree states can implement `stateArcsPage` to return bounded
+pages. Every backend roots the provider through the last retained composition,
+contains exceptions as provider errors, rejects reentrant callbacks without
+blocking, and validates all state and arc records before publishing them. See
+the [complete provider guide](https://github.com/vinary-tree/vinary-tree-interop/blob/master/docs/language-bindings/javascript-host-providers.md).
+
 ## Backend contract
 
 | Import | Backend | Intended host |

@@ -1,3 +1,8 @@
+import {
+  assertScalarWfstProvider,
+  normalizeScalarWfstProviderOptions,
+} from "@vinary-tree/vinary-tree-interop";
+
 const DEFAULT_BATCH_SIZE = 256;
 
 function defineResourceMetadata(resource, runtimeIdentity, unitDomain) {
@@ -323,6 +328,16 @@ function cacheLimit(value, fallback, name) {
   return selected;
 }
 
+function requireScalarWfstProvider(provider) {
+  assertScalarWfstProvider(provider);
+  return provider;
+}
+
+function hostWfstOptions(options) {
+  const { unitDomain, weightDomain, lazy, acyclic } = normalizeScalarWfstProviderOptions(options);
+  return [unitDomain, weightDomain, lazy, acyclic];
+}
+
 function installQueryCacheProtocol(raw) {
   if (!raw.QueryCache || raw.QueryCache.prototype.query) return;
   const prototype = raw.QueryCache.prototype;
@@ -371,6 +386,7 @@ export function createRuntime(raw) {
   Object.defineProperties(raw.Wfst.prototype, {
     interfaceId: { value: "vt.scalar-wfst.1" },
     runtimeIdentity: { value: runtimeIdentity },
+    [Symbol.dispose]: { value() { this.close(); } },
   });
 
   const libdictenstein = Object.freeze({
@@ -428,6 +444,16 @@ export function createRuntime(raw) {
   const llingLlang = Object.freeze({
     runtimeIdentity,
     vectorWfst() { return new raw.WfstBuilder(); },
+    scalarWfst(provider, options = {}) {
+      const [unitDomain, weightDomain, lazy, acyclic] = hostWfstOptions(options);
+      return raw.createHostWfst(
+        requireScalarWfstProvider(provider),
+        unitDomain,
+        weightDomain,
+        lazy,
+        acyclic,
+      );
+    },
     compose(first, second) {
       return raw.composeWfst(
         requireWfst(first, runtimeIdentity),

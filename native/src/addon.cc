@@ -1,9 +1,13 @@
 #include <node_api.h>
 
+#include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <initializer_list>
 #include <limits>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -26,6 +30,20 @@ struct PatternHandle { LlevPhoneticPattern* value; };
 struct RulesHandle { LlevPhoneticRuleSet* value; };
 struct WfstBuilderHandle { LlingWfstBuilder* value; };
 struct WfstHandle { VtResource value; };
+
+struct JsWfstProviderContext {
+  std::atomic<uint64_t> references{1};
+  std::atomic_flag active = ATOMIC_FLAG_INIT;
+  napi_env env{};
+  napi_ref provider{};
+  napi_threadsafe_function cleanup{};
+  std::thread::id owner_thread;
+  bool paged{};
+  VtWfstVTable wfst_table{
+      sizeof(VtWfstVTable), VT_WFST_INTERFACE_VERSION,
+      VT_UNIT_DOMAIN_UNICODE_SCALAR, VT_WEIGHT_DOMAIN_TROPICAL_F64,
+      0, 0, nullptr, nullptr, nullptr, nullptr, nullptr};
+};
 
 napi_value fail_napi(napi_env env, const char* expression, napi_status status) {
   const napi_extended_error_info* info = nullptr;
@@ -446,13 +464,25 @@ napi_value dictionary_entry_cursor_next_batch(
   if (status != LDICT_STATUS_OK) return ldict_error(env, status);
 
   napi_value output;
-  napi_create_array_with_length(env, batch.entry_count, &output);
+  auto napi_failure = napi_create_array_with_length(env, batch.entry_count, &output);
+  const char* napi_expression = "napi_create_array_with_length";
   bool valid = true;
-  for (size_t index = 0; index < batch.entry_count && valid; ++index) {
+  const auto check_napi = [&](napi_status status, const char* expression) {
+    if (status == napi_ok) return true;
+    napi_failure = status;
+    napi_expression = expression;
+    return false;
+  };
+  for (size_t index = 0;
+       index < batch.entry_count && valid && napi_failure == napi_ok;
+       ++index) {
     const auto& entry = batch.entries[index];
     napi_value pair, key, value, null_value;
-    napi_create_array_with_length(env, 2, &pair);
-    napi_get_null(env, &null_value);
+    if (!check_napi(napi_create_array_with_length(env, 2, &pair),
+                    "napi_create_array_with_length") ||
+        !check_napi(napi_get_null(env, &null_value), "napi_get_null")) {
+      break;
+    }
 
     if (handle->unit_domain == VT_UNIT_DOMAIN_UNICODE_SCALAR) {
       const auto* scalars = static_cast<const uint32_t*>(batch.units);
@@ -462,44 +492,66 @@ napi_value dictionary_entry_cursor_next_batch(
         valid = append_utf8(&utf8, scalars[entry.unit_offset + unit]);
         if (!valid) break;
       }
-      if (valid) napi_create_string_utf8(env, utf8.data(), utf8.size(), &key);
+      if (!valid) break;
+      if (!check_napi(napi_create_string_utf8(
+                          env, utf8.data(), utf8.size(), &key),
+                      "napi_create_string_utf8")) {
+        break;
+      }
     } else {
       const size_t width = handle->unit_domain == VT_UNIT_DOMAIN_U64
           ? sizeof(uint64_t)
           : sizeof(uint8_t);
+      if (entry.unit_len > std::numeric_limits<size_t>::max() / width) {
+        valid = false;
+        break;
+      }
       const size_t byte_length = entry.unit_len * width;
       const auto* units = static_cast<const uint8_t*>(batch.units);
       void* destination = nullptr;
       napi_value array_buffer;
-      napi_create_arraybuffer(env, byte_length, &destination, &array_buffer);
+      if (!check_napi(napi_create_arraybuffer(
+                          env, byte_length, &destination, &array_buffer),
+                      "napi_create_arraybuffer")) {
+        break;
+      }
       if (byte_length != 0) {
         std::memcpy(destination, units + entry.unit_offset * width, byte_length);
       }
-      napi_create_typedarray(
-          env,
-          handle->unit_domain == VT_UNIT_DOMAIN_U64
-              ? napi_biguint64_array
-              : napi_uint8_array,
-          entry.unit_len,
-          array_buffer,
-          0,
-          &key);
+      if (!check_napi(napi_create_typedarray(
+                          env,
+                          handle->unit_domain == VT_UNIT_DOMAIN_U64
+                              ? napi_biguint64_array
+                              : napi_uint8_array,
+                          entry.unit_len, array_buffer, 0, &key),
+                      "napi_create_typedarray")) {
+        break;
+      }
     }
 
-    value = entry.value_len == 0
-        ? null_value
-        : bigint(env, batch.values[entry.value_offset]);
-    napi_set_element(env, pair, 0, key);
-    napi_set_element(env, pair, 1, value);
-    napi_set_element(env, output, static_cast<uint32_t>(index), pair);
+    if (entry.value_len == 0) {
+      value = null_value;
+    } else if (!check_napi(napi_create_bigint_uint64(
+                                env, batch.values[entry.value_offset], &value),
+                            "napi_create_bigint_uint64")) {
+      break;
+    }
+    if (!check_napi(napi_set_element(env, pair, 0, key), "napi_set_element") ||
+        !check_napi(napi_set_element(env, pair, 1, value), "napi_set_element") ||
+        !check_napi(napi_set_element(
+                        env, output, static_cast<uint32_t>(index), pair),
+                    "napi_set_element")) {
+      break;
+    }
   }
 
   const auto release = ldict_entry_cursor_release(handle->value, batch.generation);
   if (release != LDICT_STATUS_OK) return ldict_error(env, release);
   if (!valid) {
-    napi_throw_error(env, nullptr, "dictionary returned an invalid Unicode scalar");
+    napi_throw_error(env, nullptr, "dictionary returned invalid term units");
     return nullptr;
   }
+  if (napi_failure != napi_ok) return fail_napi(env, napi_expression, napi_failure);
   return output;
 }
 
@@ -1117,6 +1169,434 @@ napi_value true_damerau_distance_threshold(napi_env env, napi_callback_info info
   return distance_threshold(env, info, 2);
 }
 
+void clear_pending_exception(napi_env env) noexcept {
+  bool pending = false;
+  if (napi_is_exception_pending(env, &pending) == napi_ok && pending) {
+    napi_value ignored;
+    (void)napi_get_and_clear_last_exception(env, &ignored);
+  }
+}
+
+void destroy_js_wfst_provider(napi_env env, napi_value, void*, void* data) {
+  auto* context = static_cast<JsWfstProviderContext*>(data);
+  if (env != nullptr && context->provider != nullptr) {
+    (void)napi_delete_reference(env, context->provider);
+  }
+  delete context;
+}
+
+VtStatus js_wfst_try_retain(JsWfstProviderContext* context);
+void js_wfst_release(void* raw_context);
+
+template <typename Operation>
+VtStatus with_js_wfst_provider(JsWfstProviderContext* context, Operation&& operation) noexcept {
+  const auto retained = js_wfst_try_retain(context);
+  if (retained != VT_STATUS_OK) return retained;
+  if (std::this_thread::get_id() != context->owner_thread) {
+    js_wfst_release(context);
+    return VT_STATUS_PROVIDER_ERROR;
+  }
+  if (context->active.test_and_set(std::memory_order_acquire)) {
+    js_wfst_release(context);
+    return VT_STATUS_PROVIDER_ERROR;
+  }
+  struct CallbackLease {
+    JsWfstProviderContext* context;
+    ~CallbackLease() {
+      context->active.clear(std::memory_order_release);
+      js_wfst_release(context);
+    }
+  } lease{context};
+  return operation();
+}
+
+bool named_value(napi_env env, napi_value object, const char* name, napi_value* output) {
+  if (napi_get_named_property(env, object, name, output) == napi_ok) return true;
+  clear_pending_exception(env);
+  return false;
+}
+
+bool js_boolean(napi_env env, napi_value value, bool* output) {
+  napi_valuetype type = napi_undefined;
+  return napi_typeof(env, value, &type) == napi_ok && type == napi_boolean &&
+         napi_get_value_bool(env, value, output) == napi_ok;
+}
+
+bool js_number(napi_env env, napi_value value, double* output) {
+  napi_valuetype type = napi_undefined;
+  return napi_typeof(env, value, &type) == napi_ok && type == napi_number &&
+         napi_get_value_double(env, value, output) == napi_ok;
+}
+
+bool is_null(napi_env env, napi_value value) {
+  napi_value null_value;
+  bool equal = false;
+  return napi_get_null(env, &null_value) == napi_ok &&
+         napi_strict_equals(env, value, null_value, &equal) == napi_ok && equal;
+}
+
+bool call_provider_method(JsWfstProviderContext* context, const char* name,
+                          size_t argument_count, const napi_value* arguments,
+                          napi_value* result) {
+  napi_value provider, method;
+  napi_valuetype type = napi_undefined;
+  const auto status = napi_get_reference_value(context->env, context->provider, &provider);
+  if (status != napi_ok || !named_value(context->env, provider, name, &method) ||
+      napi_typeof(context->env, method, &type) != napi_ok || type != napi_function ||
+      napi_call_function(context->env, provider, method, argument_count, arguments, result) != napi_ok) {
+    clear_pending_exception(context->env);
+    return false;
+  }
+  return true;
+}
+
+bool provider_has_method(napi_env env, napi_value provider, const char* name, bool* present) {
+  napi_value value;
+  bool has_property = false;
+  napi_valuetype type = napi_undefined;
+  if (napi_has_named_property(env, provider, name, &has_property) != napi_ok) return false;
+  if (!has_property) {
+    *present = false;
+    return true;
+  }
+  if (!named_value(env, provider, name, &value) || napi_typeof(env, value, &type) != napi_ok ||
+      (type != napi_function && type != napi_undefined)) {
+    return false;
+  }
+  *present = type == napi_function;
+  return true;
+}
+
+bool decode_one_utf8_scalar(const std::string& encoded, uint64_t* output) {
+  if (encoded.empty()) return false;
+  const auto first = static_cast<uint8_t>(encoded[0]);
+  size_t length = 0;
+  uint32_t value = 0;
+  uint32_t minimum = 0;
+  if (first <= 0x7f) {
+    length = 1;
+    value = first;
+  } else if ((first & 0xe0) == 0xc0) {
+    length = 2;
+    value = first & 0x1f;
+    minimum = 0x80;
+  } else if ((first & 0xf0) == 0xe0) {
+    length = 3;
+    value = first & 0x0f;
+    minimum = 0x800;
+  } else if ((first & 0xf8) == 0xf0) {
+    length = 4;
+    value = first & 0x07;
+    minimum = 0x10000;
+  } else {
+    return false;
+  }
+  if (encoded.size() != length) return false;
+  for (size_t index = 1; index < length; ++index) {
+    const auto next = static_cast<uint8_t>(encoded[index]);
+    if ((next & 0xc0) != 0x80) return false;
+    value = (value << 6) | (next & 0x3f);
+  }
+  if (value < minimum || value > 0x10ffff || (value >= 0xd800 && value <= 0xdfff)) {
+    return false;
+  }
+  *output = value;
+  return true;
+}
+
+bool provider_label(JsWfstProviderContext* context, napi_value value,
+                    uint64_t* label, uint8_t* present) {
+  if (is_null(context->env, value)) {
+    *label = 0;
+    *present = 0;
+    return true;
+  }
+  switch (context->wfst_table.unit_domain) {
+    case VT_UNIT_DOMAIN_BYTE: {
+      double number_value = 0;
+      if (!js_number(context->env, value, &number_value) || !std::isfinite(number_value) ||
+          std::floor(number_value) != number_value || number_value < 0 || number_value > 255) {
+        return false;
+      }
+      *label = static_cast<uint64_t>(number_value);
+      break;
+    }
+    case VT_UNIT_DOMAIN_UNICODE_SCALAR: {
+      std::string encoded;
+      if (!string(context->env, value, &encoded) || !decode_one_utf8_scalar(encoded, label)) {
+        return false;
+      }
+      break;
+    }
+    case VT_UNIT_DOMAIN_U64:
+      if (!uint64(context->env, value, label)) return false;
+      break;
+    default:
+      return false;
+  }
+  *present = 1;
+  return true;
+}
+
+bool parse_provider_arc(JsWfstProviderContext* context, napi_value value, VtWfstArc* output) {
+  napi_value input, output_label, target, weight;
+  VtWfstArc arc{};
+  if (!named_value(context->env, value, "input", &input) ||
+      !named_value(context->env, value, "output", &output_label) ||
+      !named_value(context->env, value, "target", &target) ||
+      !named_value(context->env, value, "weight", &weight) ||
+      !provider_label(context, input, &arc.input_label, &arc.has_input) ||
+      !provider_label(context, output_label, &arc.output_label, &arc.has_output) ||
+      !uint64(context->env, target, &arc.target_state) ||
+      !js_number(context->env, weight, &arc.weight) || std::isnan(arc.weight)) {
+    clear_pending_exception(context->env);
+    return false;
+  }
+  *output = arc;
+  return true;
+}
+
+bool parse_arc_array(JsWfstProviderContext* context, napi_value value,
+                     size_t capacity, std::vector<VtWfstArc>* output) {
+  bool is_array = false;
+  uint32_t length = 0;
+  if (napi_is_array(context->env, value, &is_array) != napi_ok || !is_array ||
+      napi_get_array_length(context->env, value, &length) != napi_ok || length > capacity) {
+    clear_pending_exception(context->env);
+    return false;
+  }
+  output->clear();
+  output->reserve(length);
+  for (uint32_t index = 0; index < length; ++index) {
+    napi_value item;
+    VtWfstArc arc{};
+    if (napi_get_element(context->env, value, index, &item) != napi_ok ||
+        !parse_provider_arc(context, item, &arc)) {
+      clear_pending_exception(context->env);
+      return false;
+    }
+    output->push_back(arc);
+  }
+  return true;
+}
+
+VtStatus js_wfst_try_retain(JsWfstProviderContext* context) {
+  if (context == nullptr) return VT_STATUS_CLOSED;
+  uint64_t current = context->references.load(std::memory_order_relaxed);
+  while (current != 0 && current != std::numeric_limits<uint64_t>::max()) {
+    if (context->references.compare_exchange_weak(
+            current, current + 1, std::memory_order_relaxed, std::memory_order_relaxed)) {
+      return VT_STATUS_OK;
+    }
+  }
+  return current == 0 ? VT_STATUS_CLOSED : VT_STATUS_LIMIT_EXCEEDED;
+}
+
+void js_wfst_retain(void* raw_context) {
+  (void)js_wfst_try_retain(static_cast<JsWfstProviderContext*>(raw_context));
+}
+
+void js_wfst_release(void* raw_context) {
+  auto* context = static_cast<JsWfstProviderContext*>(raw_context);
+  if (context == nullptr) return;
+  uint64_t current = context->references.load(std::memory_order_acquire);
+  while (current != 0) {
+    if (!context->references.compare_exchange_weak(
+            current, current - 1, std::memory_order_acq_rel, std::memory_order_acquire)) {
+      continue;
+    }
+    if (current != 1) return;
+    if (std::this_thread::get_id() == context->owner_thread) {
+      if (context->provider != nullptr) {
+        (void)napi_delete_reference(context->env, context->provider);
+        context->provider = nullptr;
+      }
+      (void)napi_release_threadsafe_function(context->cleanup, napi_tsfn_abort);
+      delete context;
+      return;
+    }
+    const auto queued = napi_call_threadsafe_function(
+        context->cleanup, context, napi_tsfn_nonblocking);
+    (void)napi_release_threadsafe_function(context->cleanup, napi_tsfn_release);
+    if (queued != napi_ok) {
+      // The environment owns and will reclaim the N-API reference during
+      // shutdown. The native context itself no longer contains callable data.
+      delete context;
+    }
+    return;
+  }
+}
+
+const VtResourceVTable* js_wfst_resource_table();
+
+VtStatus js_wfst_query_interface(void* raw_context, const VtInterfaceId* interface_id,
+                                 uint32_t minimum_version, const void** out_vtable) {
+  if (raw_context == nullptr || interface_id == nullptr || out_vtable == nullptr) {
+    return VT_STATUS_NULL_POINTER;
+  }
+  *out_vtable = nullptr;
+  auto* context = static_cast<JsWfstProviderContext*>(raw_context);
+  if (minimum_version > VT_WFST_INTERFACE_VERSION ||
+      std::memcmp(interface_id->bytes, VT_WFST_INTERFACE_ID.bytes,
+                  sizeof(interface_id->bytes)) != 0) {
+    return VT_STATUS_UNSUPPORTED;
+  }
+  *out_vtable = &context->wfst_table;
+  return VT_STATUS_OK;
+}
+
+const VtResourceVTable* js_wfst_resource_table() {
+  static const VtResourceVTable table{
+      sizeof(VtResourceVTable), VT_ABI_VERSION, 0,
+      js_wfst_retain, js_wfst_release, js_wfst_query_interface};
+  return &table;
+}
+
+VtStatus js_wfst_snapshot(void* raw_context, VtResource* out_snapshot) {
+  if (raw_context == nullptr || out_snapshot == nullptr) return VT_STATUS_NULL_POINTER;
+  const auto retained = js_wfst_try_retain(
+      static_cast<JsWfstProviderContext*>(raw_context));
+  if (retained != VT_STATUS_OK) return retained;
+  *out_snapshot = VtResource{raw_context, js_wfst_resource_table()};
+  return VT_STATUS_OK;
+}
+
+VtStatus js_wfst_start(void* raw_context, uint64_t* out_state) {
+  if (out_state == nullptr) return VT_STATUS_NULL_POINTER;
+  auto* context = static_cast<JsWfstProviderContext*>(raw_context);
+  return with_js_wfst_provider(context, [&]() {
+    napi_value result;
+    uint64_t state = 0;
+    if (!call_provider_method(context, "startState", 0, nullptr, &result) ||
+        !uint64(context->env, result, &state)) {
+      return VT_STATUS_PROVIDER_ERROR;
+    }
+    *out_state = state;
+    return VT_STATUS_OK;
+  });
+}
+
+VtStatus js_wfst_num_states(void* raw_context, size_t* out_count, uint8_t* out_known) {
+  if (out_count == nullptr || out_known == nullptr) return VT_STATUS_NULL_POINTER;
+  auto* context = static_cast<JsWfstProviderContext*>(raw_context);
+  return with_js_wfst_provider(context, [&]() {
+    napi_value result;
+    if (!call_provider_method(context, "stateCount", 0, nullptr, &result)) {
+      return VT_STATUS_PROVIDER_ERROR;
+    }
+    if (is_null(context->env, result)) {
+      *out_count = 0;
+      *out_known = 0;
+      return VT_STATUS_OK;
+    }
+    uint64_t count = 0;
+    if (!uint64(context->env, result, &count) ||
+        count > std::numeric_limits<size_t>::max()) {
+      return VT_STATUS_PROVIDER_ERROR;
+    }
+    *out_count = static_cast<size_t>(count);
+    *out_known = 1;
+    return VT_STATUS_OK;
+  });
+}
+
+VtStatus js_wfst_state_info(void* raw_context, uint64_t state, uint8_t* out_valid,
+                            uint8_t* out_final, double* out_final_weight) {
+  if (out_valid == nullptr || out_final == nullptr || out_final_weight == nullptr) {
+    return VT_STATUS_NULL_POINTER;
+  }
+  auto* context = static_cast<JsWfstProviderContext*>(raw_context);
+  return with_js_wfst_provider(context, [&]() {
+    napi_value argument = bigint(context->env, state);
+    napi_value result, valid_value, final_value, weight_value;
+    bool valid = false, final_state = false;
+    double weight = 0;
+    if (!call_provider_method(context, "stateInfo", 1, &argument, &result) ||
+        !named_value(context->env, result, "valid", &valid_value) ||
+        !named_value(context->env, result, "final", &final_value) ||
+        !named_value(context->env, result, "finalWeight", &weight_value) ||
+        !js_boolean(context->env, valid_value, &valid) ||
+        !js_boolean(context->env, final_value, &final_state) || (!valid && final_state) ||
+        !js_number(context->env, weight_value, &weight) || std::isnan(weight)) {
+      clear_pending_exception(context->env);
+      return VT_STATUS_PROVIDER_ERROR;
+    }
+    *out_valid = valid ? 1 : 0;
+    *out_final = final_state ? 1 : 0;
+    *out_final_weight = weight;
+    return VT_STATUS_OK;
+  });
+}
+
+VtStatus js_wfst_state_arcs(void* raw_context, uint64_t state, size_t start,
+                            VtWfstArc* out_arcs, size_t capacity,
+                            size_t* out_written, size_t* out_total) {
+  if (out_written == nullptr || out_total == nullptr ||
+      (capacity != 0 && out_arcs == nullptr)) {
+    return VT_STATUS_NULL_POINTER;
+  }
+  if (capacity > std::numeric_limits<uint32_t>::max()) return VT_STATUS_LIMIT_EXCEEDED;
+  auto* context = static_cast<JsWfstProviderContext*>(raw_context);
+  return with_js_wfst_provider(context, [&]() {
+    napi_value state_value = bigint(context->env, state);
+    napi_value result, arcs_value;
+    std::vector<VtWfstArc> arcs;
+    uint64_t total = 0;
+    if (context->paged) {
+      napi_value arguments[] = {
+          state_value, bigint(context->env, start),
+          number(context->env, static_cast<double>(capacity))};
+      napi_value total_value;
+      if (!call_provider_method(context, "stateArcsPage", 3, arguments, &result) ||
+          !named_value(context->env, result, "arcs", &arcs_value) ||
+          !named_value(context->env, result, "total", &total_value) ||
+          !uint64(context->env, total_value, &total) ||
+          !parse_arc_array(context, arcs_value, capacity, &arcs)) {
+        return VT_STATUS_PROVIDER_ERROR;
+      }
+    } else {
+      if (!call_provider_method(context, "stateArcs", 1, &state_value, &result)) {
+        return VT_STATUS_PROVIDER_ERROR;
+      }
+      bool is_array = false;
+      uint32_t length = 0;
+      if (napi_is_array(context->env, result, &is_array) != napi_ok || !is_array ||
+          napi_get_array_length(context->env, result, &length) != napi_ok) {
+        clear_pending_exception(context->env);
+        return VT_STATUS_PROVIDER_ERROR;
+      }
+      total = length;
+      if (start > total) return VT_STATUS_PROVIDER_ERROR;
+      const auto available = static_cast<size_t>(total - start);
+      const auto selected = available < capacity ? available : capacity;
+      napi_value page;
+      if (napi_create_array_with_length(context->env, selected, &page) != napi_ok) {
+        return VT_STATUS_PROVIDER_ERROR;
+      }
+      for (size_t index = 0; index < selected; ++index) {
+        napi_value item;
+        if (napi_get_element(context->env, result,
+                             static_cast<uint32_t>(start + index), &item) != napi_ok ||
+            napi_set_element(context->env, page, static_cast<uint32_t>(index), item) != napi_ok) {
+          clear_pending_exception(context->env);
+          return VT_STATUS_PROVIDER_ERROR;
+        }
+      }
+      if (!parse_arc_array(context, page, capacity, &arcs)) return VT_STATUS_PROVIDER_ERROR;
+    }
+    if (total > std::numeric_limits<size_t>::max() || start > total ||
+        arcs.size() > total - start || (capacity > 0 && arcs.empty() && start < total)) {
+      return VT_STATUS_PROVIDER_ERROR;
+    }
+    if (!arcs.empty()) {
+      std::memcpy(out_arcs, arcs.data(), arcs.size() * sizeof(VtWfstArc));
+    }
+    *out_written = arcs.size();
+    *out_total = static_cast<size_t>(total);
+    return VT_STATUS_OK;
+  });
+}
+
 napi_value wfst_external(napi_env env, VtResource value) {
   napi_value result;
   auto* handle = new WfstHandle{value};
@@ -1126,6 +1606,76 @@ napi_value wfst_external(napi_env env, VtResource value) {
     return fail_napi(env, "napi_create_external", status);
   }
   return result;
+}
+
+napi_value host_wfst_new(napi_env env, napi_callback_info info) {
+  const auto args = arguments(env, info, 4);
+  uint32_t unit_domain = 0, weight_domain = 0, flags = 0;
+  napi_valuetype provider_type = napi_undefined;
+  if (args.size() != 4 || napi_typeof(env, args[0], &provider_type) != napi_ok ||
+      provider_type != napi_object || is_null(env, args[0]) ||
+      !uint32(env, args[1], &unit_domain) || !uint32(env, args[2], &weight_domain) ||
+      !uint32(env, args[3], &flags)) {
+    napi_throw_type_error(env, nullptr, "invalid scalar WFST provider arguments");
+    return nullptr;
+  }
+  const uint32_t known_flags = VT_WFST_FLAG_IMMUTABLE | VT_WFST_FLAG_LAZY |
+                               VT_WFST_FLAG_ACYCLIC;
+  if (unit_domain < VT_UNIT_DOMAIN_BYTE || unit_domain > VT_UNIT_DOMAIN_U64 ||
+      weight_domain < VT_WEIGHT_DOMAIN_TROPICAL_F64 ||
+      weight_domain > VT_WEIGHT_DOMAIN_BOOLEAN_F64 || (flags & ~known_flags) != 0) {
+    napi_throw_range_error(env, nullptr, "unknown scalar WFST domain or flag");
+    return nullptr;
+  }
+  bool present = false;
+  for (const char* method : {"startState", "stateCount", "stateInfo", "stateArcs"}) {
+    if (!provider_has_method(env, args[0], method, &present) || !present) {
+      napi_throw_type_error(env, nullptr, "scalar WFST provider is missing a required method");
+      return nullptr;
+    }
+  }
+  bool paged = false;
+  if (!provider_has_method(env, args[0], "stateArcsPage", &paged)) {
+    napi_throw_type_error(env, nullptr, "scalar WFST stateArcsPage must be a function");
+    return nullptr;
+  }
+
+  auto* context = new JsWfstProviderContext{};
+  context->env = env;
+  context->owner_thread = std::this_thread::get_id();
+  context->paged = paged;
+  const auto reference_status = napi_create_reference(env, args[0], 1, &context->provider);
+  if (reference_status != napi_ok) {
+    delete context;
+    return fail_napi(env, "napi_create_reference", reference_status);
+  }
+  napi_value resource_name;
+  auto cleanup_status = napi_create_string_utf8(
+      env, "Vinary Tree scalar WFST provider", NAPI_AUTO_LENGTH, &resource_name);
+  if (cleanup_status == napi_ok) {
+    cleanup_status = napi_create_threadsafe_function(
+        env, nullptr, nullptr, resource_name, 1, 1, nullptr, nullptr, nullptr,
+        destroy_js_wfst_provider, &context->cleanup);
+  }
+  if (cleanup_status != napi_ok) {
+    (void)napi_delete_reference(env, context->provider);
+    delete context;
+    return fail_napi(env, "napi_create_threadsafe_function", cleanup_status);
+  }
+  context->wfst_table = VtWfstVTable{
+      sizeof(VtWfstVTable),
+      VT_WFST_INTERFACE_VERSION,
+      static_cast<VtUnitDomain>(unit_domain),
+      static_cast<VtWeightDomain>(weight_domain),
+      0,
+      static_cast<uint64_t>(flags | VT_WFST_FLAG_IMMUTABLE),
+      js_wfst_snapshot,
+      js_wfst_start,
+      js_wfst_num_states,
+      js_wfst_state_info,
+      js_wfst_state_arcs,
+  };
+  return wfst_external(env, VtResource{context, js_wfst_resource_table()});
 }
 
 napi_value wfst_builder_new(napi_env env, napi_callback_info) {
@@ -1293,11 +1843,31 @@ napi_value wfst_weight_domain(napi_env env, napi_callback_info info) {
   return table ? number(env, table->weight_domain) : nullptr;
 }
 
-napi_value label_value(napi_env env, uint64_t label, bool present) {
+napi_value wfst_unit_domain(napi_env env, napi_callback_info info) {
+  const auto args = arguments(env, info, 1);
+  auto* handle = args.size() == 1 ? external<WfstHandle>(env, args[0]) : nullptr;
+  const auto* table = wfst_table(env, handle);
+  return table ? number(env, table->unit_domain) : nullptr;
+}
+
+napi_value label_value(napi_env env, VtUnitDomain unit_domain,
+                       uint64_t label, bool present) {
   if (!present) {
     napi_value result;
     napi_get_null(env, &result);
     return result;
+  }
+  if (unit_domain == VT_UNIT_DOMAIN_BYTE) {
+    if (label > 255) {
+      napi_throw_error(env, nullptr, "WFST provider returned an invalid byte label");
+      return nullptr;
+    }
+    return number(env, static_cast<double>(label));
+  }
+  if (unit_domain == VT_UNIT_DOMAIN_U64) return bigint(env, label);
+  if (unit_domain != VT_UNIT_DOMAIN_UNICODE_SCALAR) {
+    napi_throw_error(env, nullptr, "WFST provider returned an unknown unit domain");
+    return nullptr;
   }
   if (label > 0x10ffff || (label >= 0xd800 && label <= 0xdfff)) {
     napi_throw_error(env, nullptr, "WFST provider returned an invalid Unicode scalar");
@@ -1341,14 +1911,21 @@ napi_value wfst_state(napi_env env, napi_callback_info info) {
   std::vector<VtWfstArc> arcs;
   if (valid) {
     size_t offset = 0;
+    size_t expected_total = 0;
+    bool observed_total = false;
     do {
       std::vector<VtWfstArc> page(VT_RECOMMENDED_ARC_BATCH);
       size_t written = 0, total = 0;
       status = table->state_arcs(handle->value.context, state, offset, page.data(), page.size(), &written, &total);
-      if (status != VT_STATUS_OK || written > page.size() || offset + written > total ||
+      if (status != VT_STATUS_OK || written > page.size() || offset > total ||
+          written > total - offset || (observed_total && total != expected_total) ||
           (written == 0 && offset < total)) {
         napi_throw_error(env, nullptr, "WFST state_arcs callback returned invalid output");
         return nullptr;
+      }
+      if (!observed_total) {
+        expected_total = total;
+        observed_total = true;
       }
       arcs.insert(arcs.end(), page.begin(), page.begin() + static_cast<std::ptrdiff_t>(written));
       offset += written;
@@ -1364,8 +1941,10 @@ napi_value wfst_state(napi_env env, napi_callback_info info) {
   for (size_t index = 0; index < arcs.size(); ++index) {
     napi_value arc;
     napi_create_object(env, &arc);
-    property(env, arc, "input", label_value(env, arcs[index].input_label, arcs[index].has_input != 0));
-    property(env, arc, "output", label_value(env, arcs[index].output_label, arcs[index].has_output != 0));
+    property(env, arc, "input", label_value(
+        env, table->unit_domain, arcs[index].input_label, arcs[index].has_input != 0));
+    property(env, arc, "output", label_value(
+        env, table->unit_domain, arcs[index].output_label, arcs[index].has_output != 0));
     property(env, arc, "target", bigint(env, arcs[index].target_state));
     property(env, arc, "weight", number(env, arcs[index].weight));
     napi_set_element(env, output, static_cast<uint32_t>(index), arc);
@@ -1439,11 +2018,13 @@ napi_value initialize(napi_env env, napi_value exports) {
     {"wfstBuilderSetFinal", nullptr, wfst_builder_set_final, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"wfstBuilderAddArc", nullptr, wfst_builder_add_arc, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"wfstBuilderBuild", nullptr, wfst_builder_build, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"hostWfstNew", nullptr, host_wfst_new, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"duallityWfstNew", nullptr, duallity_wfst_new, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"wfstCompose", nullptr, wfst_compose, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"wfstClose", nullptr, wfst_close, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"wfstStart", nullptr, wfst_start, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"wfstWeightDomain", nullptr, wfst_weight_domain, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"wfstUnitDomain", nullptr, wfst_unit_domain, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"wfstState", nullptr, wfst_state, nullptr, nullptr, nullptr, napi_default, nullptr},
   };
   NAPI_OR_RETURN(env, napi_define_properties(env, exports,
