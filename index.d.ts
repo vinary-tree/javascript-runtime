@@ -8,6 +8,10 @@ import type {
   RuntimeIdentity,
   ScalarWfstProvider,
   ScalarWfstProviderOptions,
+  SemiringOrder,
+  SemiringProperty,
+  SemiringProvider,
+  SemiringProviderOptions,
   UnitDomain,
 } from "@vinary-tree/vinary-tree-interop";
 
@@ -22,6 +26,10 @@ export type {
   RuntimeIdentity,
   ScalarWfstProvider,
   ScalarWfstProviderOptions,
+  SemiringOrder,
+  SemiringProperty,
+  SemiringProvider,
+  SemiringProviderOptions,
   UnitDomain,
   WeightDomain as InteropWeightDomain,
   WfstProviderArc,
@@ -199,11 +207,49 @@ export interface Lattice extends LatticeResource {
   close(): void;
   [Symbol.dispose](): void;
 }
+export interface SemiringWeight {
+  readonly interfaceId: "vt.semiring.val1";
+  readonly runtimeIdentity: RuntimeIdentity;
+  readonly domainId: string;
+  clone(): SemiringWeight;
+  stableBytes(): Uint8Array;
+  diagnostic(): string;
+  close(): void;
+  [Symbol.dispose](): void;
+}
+export interface Semiring {
+  readonly interfaceId: "vt.semiring.ctx1";
+  readonly runtimeIdentity: RuntimeIdentity;
+  readonly domainId: string;
+  readonly properties: readonly SemiringProperty[];
+  zero(): SemiringWeight;
+  one(): SemiringWeight;
+  plus(left: SemiringWeight, right: SemiringWeight): SemiringWeight;
+  times(left: SemiringWeight, right: SemiringWeight): SemiringWeight;
+  equal(left: SemiringWeight, right: SemiringWeight): boolean;
+  approximatelyEqual(left: SemiringWeight, right: SemiringWeight, epsilon: number): boolean;
+  naturalOrder(left: SemiringWeight, right: SemiringWeight): SemiringOrder;
+  stableBytes(value: SemiringWeight): Uint8Array;
+  diagnostic(value?: SemiringWeight | null): string;
+  plusMany(values: readonly SemiringWeight[]): SemiringWeight;
+  timesMany(values: readonly SemiringWeight[]): SemiringWeight;
+  divide(dividend: SemiringWeight, divisor: SemiringWeight): SemiringWeight | null;
+  leftDivide(value: SemiringWeight, divisor: SemiringWeight): SemiringWeight | null;
+  star(value: SemiringWeight): SemiringWeight | null;
+  numericalValue(value: SemiringWeight): number;
+  quantize(value: SemiringWeight, epsilon: number): bigint;
+  toProbability(value: SemiringWeight): number;
+  closureBound(): bigint | null;
+  validateLaws(values: readonly SemiringWeight[], epsilon?: number): void;
+  close(): void;
+  [Symbol.dispose](): void;
+}
 export interface LlingLlangNamespace {
   readonly runtimeIdentity: RuntimeIdentity;
   vectorWfst(): WfstBuilder;
   lattice(provider: LatticeProvider, options: LatticeProviderOptions): Lattice;
   validateLatticeLaws(values: readonly Lattice[]): void;
+  semiring(provider: SemiringProvider, options: SemiringProviderOptions): Semiring;
   scalarWfst(provider: ScalarWfstProvider, options?: ScalarWfstProviderOptions): Wfst;
   compose(first: Wfst, second: Wfst): Wfst;
 }

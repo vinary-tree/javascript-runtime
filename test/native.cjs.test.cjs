@@ -43,3 +43,26 @@ test("CommonJS exposes JavaScript-provided lattice values", () => {
     left.close();
   }
 });
+
+test("CommonJS exposes JavaScript-provided semirings", () => {
+  const provider = {
+    zero: () => 0,
+    one: () => 1,
+    plus: (left, right) => left + right,
+    times: (left, right) => left * right,
+    equal: (left, right) => left === right,
+    approximatelyEqual: (left, right, epsilon) => Math.abs(left - right) <= epsilon,
+    naturalOrder: (left, right) => left < right ? "better" : left > right ? "worse" : "equal",
+    diagnostic: (value) => value === undefined ? "real" : String(value),
+  };
+  const semiring = llingLlang.semiring(provider, { domainId: "example.real.sum" });
+  const one = semiring.one();
+  const two = semiring.plus(one, one);
+  try {
+    assert.equal(two.diagnostic(), "2");
+  } finally {
+    two.close();
+    one.close();
+    semiring.close();
+  }
+});

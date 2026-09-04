@@ -177,6 +177,20 @@ function buildHostLattice(value) {
   return llingLlang.lattice(maximum(value), { domainId: "example.maximum1" });
 }
 
+function buildHostSemiring() {
+  const provider = {
+    zero: () => 0,
+    one: () => 1,
+    plus: (left, right) => left + right,
+    times: (left, right) => left * right,
+    equal: Object.is,
+    approximatelyEqual: (left, right, epsilon) => Math.abs(left - right) <= epsilon,
+    naturalOrder: (left, right) => left < right ? "better" : left > right ? "worse" : "equal",
+    diagnostic: (value) => value === undefined ? "real" : `real(${value})`,
+  };
+  return llingLlang.semiring(provider, { domainId: "example.real.raw" });
+}
+
 test("lling-llang vector WFST build cycle reaches memory steady state", () => {
   assertSteady("vectorWfst", () => {
     const builder = llingLlang.vectorWfst();
@@ -240,6 +254,30 @@ test("JavaScript-provided lattice finalizers release rooted providers", async ()
     const joined = left.join(right);
     joined.diagnostic();
     // Exercise finalization for source and derived provider contexts.
+  });
+});
+
+test("JavaScript-provided semiring operations reach memory steady state", () => {
+  assertSteady("hostSemiring", () => {
+    const semiring = buildHostSemiring();
+    const zero = semiring.zero();
+    const one = semiring.one();
+    const sum = semiring.plus(zero, one);
+    sum.diagnostic();
+    sum.close();
+    one.close();
+    zero.close();
+    semiring.close();
+  });
+});
+
+test("JavaScript-provided semiring finalizers release contexts and weights", async () => {
+  await assertFinalizerSteady("hostSemiringFinalizer", () => {
+    const semiring = buildHostSemiring();
+    const zero = semiring.zero();
+    const one = semiring.one();
+    semiring.plus(zero, one).diagnostic();
+    // Deliberately let the context and every provider token reach finalizers.
   });
 });
 

@@ -405,6 +405,7 @@ The `LlingLlangNamespace` value is exported as `llingLlang`.
 | `llingLlang.vectorWfst()` | Create a mutable `WfstBuilder`. |
 | `llingLlang.lattice(provider, options)` | Root one immutable JavaScript/TypeScript `LatticeProvider` as a closeable backend-local `Lattice`. |
 | `llingLlang.validateLatticeLaws(values)` | Try to falsify the lattice laws over one to sixteen same-domain representative values. |
+| `llingLlang.semiring(provider, options)` | Root a JavaScript/TypeScript `SemiringProvider` as a closeable operation context with owned weight handles. |
 | `llingLlang.scalarWfst(provider, options?)` | Root a JavaScript/TypeScript `ScalarWfstProvider` as an immutable closeable WFST. |
 | `llingLlang.compose(first, second)` | Lazily compose two same-runtime `Wfst` resources. |
 | `WfstBuilder.addState()` | Add a state and return its numeric builder-local identifier. |
@@ -486,6 +487,113 @@ Native N-API, browser WebAssembly, and WASI expose the same lattice surface.
 Browser and WASI carry only generational handles across their JavaScript
 boundary; raw vtable pointers remain within Rust linear memory.
 
+### Host-defined semirings
+
+A `SemiringProvider<Value>` supplies five algebraic primitives over immutable
+host values: additive identity `zero`, multiplicative identity `one`, addition
+`plus`, multiplication `times`, and exact equality `equal`. It also supplies
+approximate equality, the natural order induced by addition, and bounded
+diagnostic text. `SemiringProviderOptions.domainId` is an exact printable
+16-byte semantic identifier. Two semiring contexts with the same domain remain
+distinct ownership scopes; their weights cannot be mixed.
+
+```js
+class NonnegativeReal {
+  zero() { return 0; }
+  one() { return 1; }
+  plus(left, right) { return left + right; }
+  times(left, right) { return left * right; }
+  equal(left, right) { return Object.is(left, right); }
+  approximatelyEqual(left, right, epsilon) {
+    return Math.abs(left - right) <= epsilon;
+  }
+  naturalOrder(left, right) {
+    return left < right ? "better" : left > right ? "worse" : "equal";
+  }
+  diagnostic(value) {
+    return value === undefined ? "nonnegative real" : `real(${value})`;
+  }
+  plusMany(values) { return values.reduce((sum, value) => sum + value, 0); }
+  timesMany(values) { return values.reduce((product, value) => product * value, 1); }
+  divide(value, divisor) { return divisor === 0 ? null : value / divisor; }
+  leftDivide(value, divisor) { return divisor === 0 ? null : value / divisor; }
+  star(value) { return value < 1 ? 1 / (1 - value) : null; }
+  numericalValue(value) { return value; }
+  quantize(value, epsilon) { return BigInt(Math.round(value / epsilon)); }
+  toProbability(value) { return value; }
+}
+
+using semiring = llingLlang.semiring(new NonnegativeReal(), {
+  domainId: "example.real.sum",
+  properties: [
+    "commutative-times", "totally-ordered", "zero-sum-free", "nonnegative",
+  ],
+});
+using zero = semiring.zero();
+using one = semiring.one();
+using two = semiring.plus(one, one);
+using three = semiring.plusMany([one, two]);
+using six = semiring.timesMany([two, three]);
+console.log(six.diagnostic()); // real(6)
+semiring.validateLaws([zero, one, two, three], 0);
+```
+
+| Operation-context API | Semantics |
+|---|---|
+| `Semiring.interfaceId` | Always `"vt.semiring.ctx1"`. |
+| `Semiring.runtimeIdentity` | Identity of the backend instance that owns the context. |
+| `Semiring.domainId` | Exact 16-byte semantic domain selected at construction. |
+| `Semiring.properties` | Frozen, sorted set of declared algebraic laws. |
+| `Semiring.zero()` | Create an independently owned additive identity. |
+| `Semiring.one()` | Create an independently owned multiplicative identity. |
+| `Semiring.plus(left, right)` | Add two weights from this exact context. |
+| `Semiring.times(left, right)` | Multiply two weights from this exact context. |
+| `Semiring.equal(left, right)` | Test provider-defined exact equality. |
+| `Semiring.approximatelyEqual(left, right, epsilon)` | Test approximate equality with a finite nonnegative tolerance. |
+| `Semiring.naturalOrder(left, right)` | Return `"better"`, `"equal"`, `"worse"`, or `"incomparable"`. |
+| `Semiring.stableBytes(value)` | Copy canonical identity bytes when the provider supports them. |
+| `Semiring.diagnostic(value?)` | Return bounded context- or value-level diagnostic text. |
+| `Semiring.plusMany(values)` | Add an ordered bounded batch, or return `zero()` for an empty batch. |
+| `Semiring.timesMany(values)` | Multiply an ordered bounded batch, or return `one()` for an empty batch. |
+| `Semiring.divide(dividend, divisor)` | Return a right quotient, or `null` when undefined. |
+| `Semiring.leftDivide(value, divisor)` | Return a weak left quotient, or `null` when undefined. |
+| `Semiring.star(value)` | Return Kleene closure, or `null` when it diverges. |
+| `Semiring.numericalValue(value)` | Project a finite numeric value. |
+| `Semiring.quantize(value, epsilon)` | Produce a stable signed 64-bit quantization bucket as `bigint`. |
+| `Semiring.toProbability(value)` | Project a finite nonnegative probability-like value. |
+| `Semiring.closureBound()` | Return a declared closure bound, or `null` when unknown. |
+| `Semiring.validateLaws(values, epsilon?)` | Try to falsify base and declared laws over representative values. |
+| `Semiring.close()` | Idempotently release the public context handle. Existing weights retain it. |
+| `Semiring[Symbol.dispose]()` | Perform the same deterministic release for `using`. |
+
+| Weight API | Semantics |
+|---|---|
+| `SemiringWeight.interfaceId` | Always `"vt.semiring.val1"`. |
+| `SemiringWeight.runtimeIdentity` | Identity of the backend instance that owns the token. |
+| `SemiringWeight.domainId` | Semantic domain inherited from its operation context. |
+| `SemiringWeight.clone()` | Ask the provider for a new independently owned token. |
+| `SemiringWeight.stableBytes()` | Copy canonical identity bytes when supported. |
+| `SemiringWeight.diagnostic()` | Return bounded provider diagnostic text for this value. |
+| `SemiringWeight.close()` | Idempotently release this token. |
+| `SemiringWeight[Symbol.dispose]()` | Perform the same deterministic release for `using`. |
+
+`Semiring.plusMany` and `Semiring.timesMany` use provider batches of at most
+256 weights when both optional callbacks exist, otherwise they preserve the
+same associative fold order with scalar callbacks. `divide`, `leftDivide`, and
+`star` return `null` when the mathematical result is undefined. `stableBytes`,
+the three numerical projections, and `closureBound` fail diagnostically when
+their independent capability is absent. A non-null closure bound requires the
+`"k-closed"` property.
+
+`Semiring.properties` returns canonical sorted law names. They are explicit
+claims tested by `validateLaws`, not permission to skip boundary validation.
+`SemiringWeight.clone` invokes provider ownership logic; copying a JavaScript
+reference is not a substitute. A weight retains its operation context until
+the weight closes. Provider exceptions become `ProviderError`, recursive entry
+fails immediately through a nonblocking gate, and all returned values are
+validated before publication. Native N-API, browser WebAssembly, and WASI
+implement this same contract.
+
 ### duallity
 
 The `DuallityNamespace` value is exported as `duallity`.
@@ -538,11 +646,18 @@ their own optional stable-byte and batch capabilities, and provider callbacks
 run only after the guest registry releases its lock. Stable bytes and
 diagnostics are copied through bounded linear-memory buffers.
 
+`WasiRuntime.llingLlang.semiring` stores the operation context and each host
+weight in separate index-plus-generation slots. The guest holds only compact
+tokens, releases its registry lock before every imported callback, and copies
+bounded diagnostics or stable bytes through linear memory. Optional capability
+groups, law validation, context identity, batch bounds, and deterministic
+weight disposal match the native and browser backends.
+
 ## Lifecycle and ownership
 
 Every resource type that declares `close()` owns native or WebAssembly state.
 `Dictionary`, `DictionaryEntryCursor`, `QueryCursor`, `QueryCache`, `Wfst`,
-`WfstBuilder`, and `Lattice` also implement
+`WfstBuilder`, `Lattice`, `Semiring`, and `SemiringWeight` also implement
 `Symbol.dispose`, so they support explicit resource management:
 
 ```js

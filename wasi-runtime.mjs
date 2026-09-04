@@ -2,8 +2,10 @@ import { readFile } from "node:fs/promises";
 import { WASI } from "node:wasi";
 import {
   assertLatticeProvider,
+  assertSemiringProvider,
   assertScalarWfstProvider,
   normalizeLatticeProviderOptions,
+  normalizeSemiringProviderOptions,
   normalizeScalarWfstProviderOptions,
 } from "@vinary-tree/vinary-tree-interop";
 
@@ -54,6 +56,33 @@ const HOST_LATTICE_JOIN = 1;
 const HOST_LATTICE_MEET = 2;
 const HOST_LATTICE_STABLE = 1;
 const HOST_LATTICE_DIAGNOSTIC = 2;
+const HOST_SEMIRING_THREAD_BOUND = 1n;
+const HOST_SEMIRING_STABLE_BYTES = 4n;
+const HOST_SEMIRING_BATCH = 8n;
+const HOST_SEMIRING_DIVISION = 1;
+const HOST_SEMIRING_STAR = 2;
+const HOST_SEMIRING_NUMERIC = 4;
+const HOST_SEMIRING_ZERO = 1;
+const HOST_SEMIRING_ONE = 2;
+const HOST_SEMIRING_PLUS = 1;
+const HOST_SEMIRING_TIMES = 2;
+const HOST_SEMIRING_EQUAL = 1;
+const HOST_SEMIRING_APPROX_EQUAL = 2;
+const HOST_SEMIRING_STABLE = 1;
+const HOST_SEMIRING_DIAGNOSTIC = 2;
+const HOST_SEMIRING_DIVIDE = 1;
+const HOST_SEMIRING_LEFT_DIVIDE = 2;
+const HOST_SEMIRING_NUMERICAL = 1;
+const HOST_SEMIRING_PROBABILITY = 2;
+const SEMIRING_PROPERTIES = new Map([
+  ["hashable", 1n],
+  ["idempotent-plus", 2n],
+  ["k-closed", 4n],
+  ["zero-sum-free", 8n],
+  ["commutative-times", 16n],
+  ["totally-ordered", 32n],
+  ["nonnegative", 64n],
+]);
 const MAXIMUM_PROVIDER_BYTES = 16 * 1024 * 1024;
 const MAXIMUM_LATTICE_BATCH = 256;
 const MAXIMUM_LAW_SAMPLES = 16;
@@ -122,7 +151,7 @@ class GenerationalProviderTable {
     }
     const index = low - 1;
     const slot = this.#slots[index];
-    if (slot === undefined || slot.provider === null || slot.generation !== generation) return null;
+    if (slot === undefined || slot.metadata === null || slot.generation !== generation) return null;
     return { index, slot };
   }
 }
@@ -159,6 +188,27 @@ function hostLatticeOptions(provider, options) {
   assertLatticeProvider(provider);
   const { domainId } = normalizeLatticeProviderOptions(options);
   return { provider, domainId, flags: latticeProviderFlags(provider) };
+}
+
+function hostSemiringOptions(provider, options) {
+  assertSemiringProvider(provider);
+  const normalized = normalizeSemiringProviderOptions(options);
+  const propertyBits = normalized.properties.reduce((bits, property) => {
+    const bit = SEMIRING_PROPERTIES.get(property);
+    if (bit === undefined) throw new TypeError(`unknown semiring property ${property}`);
+    return bits | bit;
+  }, 0n);
+  let flags = HOST_SEMIRING_THREAD_BOUND;
+  if (typeof provider.stableBytes === "function") flags |= HOST_SEMIRING_STABLE_BYTES;
+  if (typeof provider.plusMany === "function") flags |= HOST_SEMIRING_BATCH;
+  if ((propertyBits & 1n) !== 0n && (flags & HOST_SEMIRING_STABLE_BYTES) === 0n) {
+    throw new TypeError("hashable semirings must implement stableBytes");
+  }
+  let capabilities = 0;
+  if (typeof provider.divide === "function") capabilities |= HOST_SEMIRING_DIVISION;
+  if (typeof provider.star === "function") capabilities |= HOST_SEMIRING_STAR;
+  if (typeof provider.numericalValue === "function") capabilities |= HOST_SEMIRING_NUMERIC;
+  return { provider, ...normalized, propertyBits, flags, capabilities };
 }
 
 function exactU64(value, name) {
@@ -247,6 +297,41 @@ export async function createWasiRuntime({
       { length: count },
       (_value, index) => latticeOperand(memory.getUint32(pointer + index * 4, true), domainId),
     );
+  };
+  const semiringValue = (context, handle) => {
+    const slot = providers.resolve(handle, "semiring-value");
+    if (slot === null) throw new Error("stale or foreign WASI semiring weight handle");
+    if (slot.metadata.context !== context) {
+      throw new TypeError("semiring weight belongs to a different operation context");
+    }
+    return slot.provider;
+  };
+  const writeSemiringValue = (context, value, outputPointer) => {
+    const handle = providers.insert(value, { kind: "semiring-value", context });
+    try {
+      memoryView().setUint32(outputPointer, handle, true);
+    } catch (error) {
+      providers.release(handle);
+      throw error;
+    }
+  };
+  const semiringValueArray = (context, pointer, count) => {
+    if (count > MAXIMUM_LATTICE_BATCH) throw new RangeError("semiring batch exceeds 256 values");
+    const memory = memoryView();
+    return Array.from(
+      { length: count },
+      (_value, index) => semiringValue(context, memory.getUint32(pointer + index * 4, true)),
+    );
+  };
+  const semiringOptionalResult = (context, value, handlePointer, definedPointer) => {
+    if (value === null) {
+      const memory = memoryView();
+      memory.setUint32(handlePointer, 0, true);
+      memory.setUint8(definedPointer, 0);
+      return;
+    }
+    writeSemiringValue(context, value, handlePointer);
+    memoryView().setUint8(definedPointer, 1);
   };
   const host = {
     host_provider_release(handle) {
@@ -417,6 +502,197 @@ export async function createWasiRuntime({
         );
       });
     },
+    host_semiring_construct(context, operation, outputPointer) {
+      return providers.invoke(context, "semiring", (provider) => {
+        const method = operation === HOST_SEMIRING_ZERO
+          ? "zero"
+          : operation === HOST_SEMIRING_ONE ? "one" : null;
+        if (method === null) throw new TypeError("unknown semiring constructor operation");
+        writeSemiringValue(context, provider[method](), outputPointer);
+      });
+    },
+    host_semiring_clone(context, value, outputPointer) {
+      return providers.invoke(context, "semiring", () => {
+        writeSemiringValue(context, semiringValue(context, value), outputPointer);
+      });
+    },
+    host_semiring_value_release(context, value) {
+      const contextSlot = providers.resolve(context, "semiring");
+      const valueSlot = providers.resolve(value, "semiring-value");
+      if (contextSlot === null || valueSlot === null) return HOST_CLOSED;
+      if (valueSlot.metadata.context !== context) return HOST_INVALID_ARGUMENT;
+      providers.release(value);
+      return HOST_OK;
+    },
+    host_semiring_binary(context, left, right, operation, outputPointer) {
+      return providers.invoke(context, "semiring", (provider) => {
+        const method = operation === HOST_SEMIRING_PLUS
+          ? "plus"
+          : operation === HOST_SEMIRING_TIMES ? "times" : null;
+        if (method === null) throw new TypeError("unknown semiring binary operation");
+        writeSemiringValue(
+          context,
+          provider[method](semiringValue(context, left), semiringValue(context, right)),
+          outputPointer,
+        );
+      });
+    },
+    host_semiring_compare(context, left, right, operation, epsilon, outputPointer) {
+      return providers.invoke(context, "semiring", (provider) => {
+        const leftValue = semiringValue(context, left);
+        const rightValue = semiringValue(context, right);
+        const result = operation === HOST_SEMIRING_EQUAL
+          ? provider.equal(leftValue, rightValue)
+          : operation === HOST_SEMIRING_APPROX_EQUAL
+            ? provider.approximatelyEqual(leftValue, rightValue, epsilon)
+            : null;
+        if (typeof result !== "boolean") {
+          throw new TypeError("semiring equality must return a boolean");
+        }
+        memoryView().setUint8(outputPointer, Number(result));
+      });
+    },
+    host_semiring_order(context, left, right, outputPointer) {
+      return providers.invoke(context, "semiring", (provider) => {
+        const result = provider.naturalOrder(
+          semiringValue(context, left), semiringValue(context, right),
+        );
+        const encoded = new Map([
+          ["better", -1], ["equal", 0], ["worse", 1], ["incomparable", 2],
+        ]).get(result);
+        if (encoded === undefined) throw new TypeError("invalid semiring natural-order result");
+        memoryView().setInt32(outputPointer, encoded, true);
+      });
+    },
+    host_semiring_bytes(
+      context,
+      value,
+      operation,
+      outputPointer,
+      capacity,
+      writtenPointer,
+      requiredPointer,
+    ) {
+      return providers.invoke(context, "semiring", (provider) => {
+        let encoded;
+        if (operation === HOST_SEMIRING_STABLE) {
+          encoded = provider.stableBytes(semiringValue(context, value));
+          if (!(encoded instanceof Uint8Array)) {
+            throw new TypeError("semiring stableBytes must return Uint8Array");
+          }
+        } else if (operation === HOST_SEMIRING_DIAGNOSTIC) {
+          const diagnostic = value === 0
+            ? provider.diagnostic()
+            : provider.diagnostic(semiringValue(context, value));
+          if (typeof diagnostic !== "string") {
+            throw new TypeError("semiring diagnostic must return a string");
+          }
+          encoded = encoder.encode(diagnostic);
+        } else {
+          throw new TypeError("unknown semiring byte operation");
+        }
+        if (encoded.byteLength > MAXIMUM_PROVIDER_BYTES) {
+          throw new RangeError("semiring provider bytes exceed the defensive limit");
+        }
+        const written = Math.min(capacity, encoded.byteLength);
+        if (written !== 0) {
+          new Uint8Array(ffi.memory.buffer).set(encoded.subarray(0, written), outputPointer);
+        }
+        const memory = memoryView();
+        memory.setUint32(writtenPointer, written, true);
+        memory.setUint32(requiredPointer, encoded.byteLength, true);
+      });
+    },
+    host_semiring_many(context, valuesPointer, count, operation, outputPointer) {
+      return providers.invoke(context, "semiring", (provider) => {
+        const method = operation === HOST_SEMIRING_PLUS
+          ? "plusMany"
+          : operation === HOST_SEMIRING_TIMES ? "timesMany" : null;
+        if (method === null || typeof provider[method] !== "function") {
+          throw new TypeError("unknown or unavailable semiring batch operation");
+        }
+        writeSemiringValue(
+          context,
+          provider[method](semiringValueArray(context, valuesPointer, count)),
+          outputPointer,
+        );
+      });
+    },
+    host_semiring_optional(
+      context,
+      left,
+      right,
+      operation,
+      handlePointer,
+      definedPointer,
+    ) {
+      return providers.invoke(context, "semiring", (provider) => {
+        const method = operation === HOST_SEMIRING_DIVIDE
+          ? "divide"
+          : operation === HOST_SEMIRING_LEFT_DIVIDE ? "leftDivide" : null;
+        if (method === null || typeof provider[method] !== "function") {
+          throw new TypeError("unknown or unavailable semiring division operation");
+        }
+        semiringOptionalResult(
+          context,
+          provider[method](semiringValue(context, left), semiringValue(context, right)),
+          handlePointer,
+          definedPointer,
+        );
+      });
+    },
+    host_semiring_star(context, value, handlePointer, definedPointer) {
+      return providers.invoke(context, "semiring", (provider) => {
+        if (typeof provider.star !== "function") {
+          throw new TypeError("semiring star is unavailable");
+        }
+        semiringOptionalResult(
+          context,
+          provider.star(semiringValue(context, value)),
+          handlePointer,
+          definedPointer,
+        );
+      });
+    },
+    host_semiring_numeric(context, value, operation, outputPointer) {
+      return providers.invoke(context, "semiring", (provider) => {
+        const method = operation === HOST_SEMIRING_NUMERICAL
+          ? "numericalValue"
+          : operation === HOST_SEMIRING_PROBABILITY ? "toProbability" : null;
+        if (method === null || typeof provider[method] !== "function") {
+          throw new TypeError("unknown or unavailable semiring numerical operation");
+        }
+        const result = exactNumber(
+          provider[method](semiringValue(context, value)), `semiring ${method} result`,
+        );
+        memoryView().setFloat64(outputPointer, result, true);
+      });
+    },
+    host_semiring_quantize(context, value, epsilon, outputPointer) {
+      return providers.invoke(context, "semiring", (provider) => {
+        const result = provider.quantize(semiringValue(context, value), epsilon);
+        if (typeof result !== "bigint" ||
+            result < -0x8000_0000_0000_0000n || result > 0x7fff_ffff_ffff_ffffn) {
+          throw new RangeError("semiring quantize must return a signed 64-bit bigint");
+        }
+        memoryView().setBigInt64(outputPointer, result, true);
+      });
+    },
+    host_semiring_closure_bound(context, boundPointer, knownPointer) {
+      return providers.invoke(context, "semiring", (_provider, metadata) => {
+        const memory = memoryView();
+        if (metadata.closureBound === null) {
+          memory.setUint32(boundPointer, 0, true);
+          memory.setUint8(knownPointer, 0);
+        } else {
+          if (metadata.closureBound > 0xffff_ffffn) {
+            throw new RangeError("WASI semiring closureBound exceeds u32");
+          }
+          memory.setUint32(boundPointer, Number(metadata.closureBound), true);
+          memory.setUint8(knownPointer, 1);
+        }
+      });
+    },
   };
   const imports = wasi.getImportObject();
   imports.vinary_tree_host = host;
@@ -476,6 +752,13 @@ export async function createWasiRuntime({
     }
     return value;
   }
+  function requireSemiringWeight(value, semiring) {
+    if (value?.interfaceId !== "vt.semiring.val1" || value.runtimeIdentity !== runtimeIdentity ||
+        value._semiring !== semiring) {
+      throw new TypeError("semiring weight belongs to a different operation context");
+    }
+    return value;
+  }
   function withLatticeHandles(values, maximum, domainId, operation) {
     if (!Array.isArray(values) || values.length > maximum) {
       throw new TypeError(`lattice values must be an array of at most ${maximum} entries`);
@@ -484,6 +767,19 @@ export async function createWasiRuntime({
     const data = new DataView(encoded.buffer);
     values.forEach((value, index) => {
       data.setUint32(index * 4, requireLattice(value, domainId)._handle, true);
+    });
+    return withBytes(encoded, (pointer) => operation(pointer, values.length));
+  }
+  function withSemiringHandles(values, maximum, semiring, operation) {
+    if (!Array.isArray(values) || values.length > maximum) {
+      throw new TypeError(`semiring values must be an array of at most ${maximum} entries`);
+    }
+    const encoded = new Uint8Array(values.length * 4);
+    const data = new DataView(encoded.buffer);
+    values.forEach((value, index) => {
+      data.setUint32(
+        index * 4, requireSemiringWeight(value, semiring)._handle, true,
+      );
     });
     return withBytes(encoded, (pointer) => operation(pointer, values.length));
   }
@@ -1053,6 +1349,166 @@ export async function createWasiRuntime({
     [Symbol.dispose]() { this.close(); }
   }
 
+  class SemiringWeight {
+    #handle;
+    #semiring;
+    constructor(handle, semiring) {
+      this.#handle = failure(handle);
+      this.#semiring = semiring;
+      Object.defineProperties(this, {
+        interfaceId: { value: "vt.semiring.val1", enumerable: true },
+        runtimeIdentity: { value: runtimeIdentity, enumerable: true },
+        domainId: { value: semiring.domainId, enumerable: true },
+      });
+    }
+    get _handle() {
+      if (this.#handle === 0) throw new Error("semiring weight is closed");
+      return this.#handle;
+    }
+    get _semiring() { return this.#semiring; }
+    clone() { return new SemiringWeight(ffi.vt_semiring_weight_clone(this._handle), this.#semiring); }
+    stableBytes() { return this.#semiring.stableBytes(this); }
+    diagnostic() { return this.#semiring.diagnostic(this); }
+    close() {
+      if (this.#handle !== 0) {
+        ffi.vt_handle_close(this.#handle);
+        this.#handle = 0;
+      }
+    }
+    [Symbol.dispose]() { this.close(); }
+  }
+
+  class Semiring {
+    #handle;
+    constructor(handle, options) {
+      this.#handle = failure(handle);
+      Object.defineProperties(this, {
+        interfaceId: { value: "vt.semiring.ctx1", enumerable: true },
+        runtimeIdentity: { value: runtimeIdentity, enumerable: true },
+        domainId: { value: options.domainId, enumerable: true },
+        properties: { value: options.properties, enumerable: true },
+      });
+    }
+    get _handle() {
+      if (this.#handle === 0) throw new Error("semiring context is closed");
+      return this.#handle;
+    }
+    #weight(handle) { return new SemiringWeight(handle, this); }
+    #operand(value) { return requireSemiringWeight(value, this)._handle; }
+    zero() { return this.#weight(ffi.vt_semiring_zero(this._handle)); }
+    one() { return this.#weight(ffi.vt_semiring_one(this._handle)); }
+    plus(left, right) {
+      return this.#weight(ffi.vt_semiring_plus(
+        this._handle, this.#operand(left), this.#operand(right),
+      ));
+    }
+    times(left, right) {
+      return this.#weight(ffi.vt_semiring_times(
+        this._handle, this.#operand(left), this.#operand(right),
+      ));
+    }
+    equal(left, right) {
+      return failure(ffi.vt_semiring_equal(
+        this._handle, this.#operand(left), this.#operand(right),
+      )) !== 0;
+    }
+    approximatelyEqual(left, right, epsilon) {
+      return failure(ffi.vt_semiring_approximately_equal(
+        this._handle, this.#operand(left), this.#operand(right), epsilon,
+      )) !== 0;
+    }
+    naturalOrder(left, right) {
+      const order = failure(ffi.vt_semiring_natural_order(
+        this._handle, this.#operand(left), this.#operand(right),
+      ));
+      const values = ["better", "equal", "worse", "incomparable"];
+      if (order >= values.length) throw new TypeError("invalid semiring natural-order result");
+      return values[order];
+    }
+    stableBytes(value) {
+      const handle = this.#operand(value);
+      const length = failure(ffi.vt_semiring_stable_bytes(this._handle, handle));
+      const pointer = failure(ffi.vt_semiring_weight_bytes_pointer(handle));
+      return bytes().slice(pointer, pointer + length);
+    }
+    diagnostic(value = null) {
+      if (value === null) {
+        const length = failure(ffi.vt_semiring_diagnostic(this._handle));
+        const pointer = failure(ffi.vt_semiring_context_bytes_pointer(this._handle));
+        return decoder.decode(bytes().slice(pointer, pointer + length));
+      }
+      const handle = this.#operand(value);
+      const length = failure(ffi.vt_semiring_weight_diagnostic(this._handle, handle));
+      const pointer = failure(ffi.vt_semiring_weight_bytes_pointer(handle));
+      return decoder.decode(bytes().slice(pointer, pointer + length));
+    }
+    plusMany(values) {
+      return withSemiringHandles(values, MAXIMUM_LATTICE_BATCH, this, (pointer, count) =>
+        this.#weight(ffi.vt_semiring_plus_many(this._handle, pointer, count)));
+    }
+    timesMany(values) {
+      return withSemiringHandles(values, MAXIMUM_LATTICE_BATCH, this, (pointer, count) =>
+        this.#weight(ffi.vt_semiring_times_many(this._handle, pointer, count)));
+    }
+    divide(left, right) {
+      const handle = failure(ffi.vt_semiring_divide(
+        this._handle, this.#operand(left), this.#operand(right),
+      ));
+      return handle === 0 ? null : this.#weight(handle);
+    }
+    leftDivide(left, right) {
+      const handle = failure(ffi.vt_semiring_left_divide(
+        this._handle, this.#operand(left), this.#operand(right),
+      ));
+      return handle === 0 ? null : this.#weight(handle);
+    }
+    star(value) {
+      const handle = failure(ffi.vt_semiring_star(this._handle, this.#operand(value)));
+      return handle === 0 ? null : this.#weight(handle);
+    }
+    #numeric(value, operation) {
+      const output = ffi.vt_alloc(8);
+      try {
+        failure(ffi.vt_semiring_numeric(this._handle, this.#operand(value), operation, output));
+        return view().getFloat64(output, true);
+      } finally {
+        ffi.vt_dealloc(output, 8);
+      }
+    }
+    numericalValue(value) { return this.#numeric(value, HOST_SEMIRING_NUMERICAL); }
+    toProbability(value) { return this.#numeric(value, HOST_SEMIRING_PROBABILITY); }
+    quantize(value, epsilon) {
+      const output = ffi.vt_alloc(8);
+      try {
+        failure(ffi.vt_semiring_quantize(this._handle, this.#operand(value), epsilon, output));
+        return view().getBigInt64(output, true);
+      } finally {
+        ffi.vt_dealloc(output, 8);
+      }
+    }
+    closureBound() {
+      const output = ffi.vt_alloc(16);
+      try {
+        failure(ffi.vt_semiring_closure_bound(this._handle, output));
+        return view().getUint8(output + 8) === 0 ? null : view().getBigUint64(output, true);
+      } finally {
+        ffi.vt_dealloc(output, 16);
+      }
+    }
+    validateLaws(values, epsilon = 0) {
+      withSemiringHandles(values, MAXIMUM_LAW_SAMPLES, this, (pointer, count) => {
+        failure(ffi.vt_semiring_validate_laws(this._handle, pointer, count, epsilon));
+      });
+    }
+    close() {
+      if (this.#handle !== 0) {
+        ffi.vt_handle_close(this.#handle);
+        this.#handle = 0;
+      }
+    }
+    [Symbol.dispose]() { this.close(); }
+  }
+
   class WfstBuilder {
     #handle = failure(ffi.vt_wfst_builder_new());
     get _handle() {
@@ -1138,6 +1594,31 @@ export async function createWasiRuntime({
         failure(guestHandle);
       }
       return new Lattice(guestHandle, selected.domainId);
+    },
+    semiring(provider, options) {
+      const selected = hostSemiringOptions(provider, options);
+      const hostHandle = providers.insert(selected.provider, {
+        kind: "semiring",
+        domainId: selected.domainId,
+        flags: selected.flags,
+        capabilities: selected.capabilities,
+        properties: selected.propertyBits,
+        closureBound: selected.closureBound,
+      });
+      const guestHandle = withBytes(selected.domainId, (pointer, length) =>
+        ffi.vt_host_semiring_new(
+          hostHandle,
+          pointer,
+          length,
+          selected.flags,
+          selected.capabilities,
+          selected.propertyBits,
+        ));
+      if ((guestHandle >>> 0) === FAILURE) {
+        providers.release(hostHandle);
+        failure(guestHandle);
+      }
+      return new Semiring(guestHandle, selected);
     },
     validateLatticeLaws(values) {
       const domainId = values?.[0]?.domainId;

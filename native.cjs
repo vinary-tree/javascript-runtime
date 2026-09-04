@@ -1,8 +1,10 @@
 "use strict";
 const {
   assertLatticeProvider,
+  assertSemiringProvider,
   assertScalarWfstProvider,
   normalizeLatticeProviderOptions,
+  normalizeSemiringProviderOptions,
   normalizeScalarWfstProviderOptions,
 } = require("@vinary-tree/vinary-tree-interop");
 const { existsSync } = require("node:fs");
@@ -39,6 +41,11 @@ const weightDomains = new Map([
 ]);
 const unitDomains = new Map(Array.from(domains, ([name, value]) => [value, name]));
 const weightDomainValues = new Map(Array.from(weightDomains, ([value, name]) => [name, value]));
+const semiringProperties = new Map([
+  ["hashable", 1n], ["idempotent-plus", 2n], ["k-closed", 4n],
+  ["zero-sum-free", 8n], ["commutative-times", 16n],
+  ["totally-ordered", 32n], ["nonnegative", 64n],
+]);
 
 function select(table, value, kind) {
   const selected = table.get(value);
@@ -63,6 +70,15 @@ function hostLattice(provider, options) {
   assertLatticeProvider(provider);
   const { domainId } = normalizeLatticeProviderOptions(options);
   return [provider, domainId];
+}
+
+function hostSemiring(provider, options) {
+  assertSemiringProvider(provider);
+  const normalized = normalizeSemiringProviderOptions(options);
+  const propertyBits = normalized.properties.reduce(
+    (bits, property) => bits | select(semiringProperties, property, "semiring property"), 0n,
+  );
+  return { provider, ...normalized, propertyBits };
 }
 
 function hostWfstOptions(options) {
@@ -493,6 +509,128 @@ class Lattice {
   [Symbol.dispose]() { this.close(); }
 }
 
+class SemiringWeight {
+  #handle;
+  #semiring;
+  constructor(handle, semiring) {
+    this.#handle = handle;
+    this.#semiring = semiring;
+    Object.defineProperties(this, {
+      interfaceId: { value: "vt.semiring.val1", enumerable: true },
+      runtimeIdentity: { value: runtimeIdentity, enumerable: true },
+      domainId: { value: semiring.domainId, enumerable: true },
+    });
+  }
+  get _handle() {
+    if (this.#handle === null) throw new Error("semiring weight is closed");
+    return this.#handle;
+  }
+  get _semiring() { return this.#semiring; }
+  clone() { return new SemiringWeight(ffi.semiringWeightClone(this._handle), this.#semiring); }
+  stableBytes() { return this.#semiring.stableBytes(this); }
+  diagnostic() { return this.#semiring.diagnostic(this); }
+  close() {
+    if (this.#handle !== null) {
+      ffi.semiringWeightClose(this.#handle);
+      this.#handle = null;
+    }
+  }
+  [Symbol.dispose]() { this.close(); }
+}
+
+class Semiring {
+  #handle;
+  constructor(handle, options) {
+    this.#handle = handle;
+    Object.defineProperties(this, {
+      interfaceId: { value: "vt.semiring.ctx1", enumerable: true },
+      runtimeIdentity: { value: runtimeIdentity, enumerable: true },
+      domainId: { value: options.domainId, enumerable: true },
+      properties: { value: options.properties, enumerable: true },
+    });
+  }
+  get _handle() {
+    if (this.#handle === null) throw new Error("semiring context is closed");
+    return this.#handle;
+  }
+  #operand(value) {
+    if (value?.runtimeIdentity !== runtimeIdentity ||
+        value.interfaceId !== "vt.semiring.val1" || value._semiring !== this) {
+      throw new TypeError("semiring weight belongs to a different operation context");
+    }
+    return value._handle;
+  }
+  #weight(handle) { return new SemiringWeight(handle, this); }
+  zero() { return this.#weight(ffi.semiringZero(this._handle)); }
+  one() { return this.#weight(ffi.semiringOne(this._handle)); }
+  plus(left, right) {
+    return this.#weight(ffi.semiringPlus(this._handle, this.#operand(left), this.#operand(right)));
+  }
+  times(left, right) {
+    return this.#weight(ffi.semiringTimes(this._handle, this.#operand(left), this.#operand(right)));
+  }
+  equal(left, right) {
+    return ffi.semiringEqual(this._handle, this.#operand(left), this.#operand(right));
+  }
+  approximatelyEqual(left, right, epsilon) {
+    return ffi.semiringApproximatelyEqual(
+      this._handle, this.#operand(left), this.#operand(right), epsilon,
+    );
+  }
+  naturalOrder(left, right) {
+    return ffi.semiringNaturalOrder(this._handle, this.#operand(left), this.#operand(right));
+  }
+  stableBytes(value) { return ffi.semiringStableBytes(this._handle, this.#operand(value)); }
+  diagnostic(value = null) {
+    return ffi.semiringDiagnostic(
+      this._handle, value === null ? null : this.#operand(value),
+    );
+  }
+  plusMany(values) {
+    if (!Array.isArray(values)) throw new TypeError("semiring operands must be an array");
+    return this.#weight(ffi.semiringPlusMany(this._handle, values.map((v) => this.#operand(v))));
+  }
+  timesMany(values) {
+    if (!Array.isArray(values)) throw new TypeError("semiring operands must be an array");
+    return this.#weight(ffi.semiringTimesMany(this._handle, values.map((v) => this.#operand(v))));
+  }
+  divide(dividend, divisor) {
+    const result = ffi.semiringDivide(
+      this._handle, this.#operand(dividend), this.#operand(divisor),
+    );
+    return result === null ? null : this.#weight(result);
+  }
+  leftDivide(value, divisor) {
+    const result = ffi.semiringLeftDivide(
+      this._handle, this.#operand(value), this.#operand(divisor),
+    );
+    return result === null ? null : this.#weight(result);
+  }
+  star(value) {
+    const result = ffi.semiringStar(this._handle, this.#operand(value));
+    return result === null ? null : this.#weight(result);
+  }
+  numericalValue(value) { return ffi.semiringNumericalValue(this._handle, this.#operand(value)); }
+  quantize(value, epsilon) {
+    return ffi.semiringQuantize(this._handle, this.#operand(value), epsilon);
+  }
+  toProbability(value) {
+    return ffi.semiringToProbability(this._handle, this.#operand(value));
+  }
+  closureBound() { return ffi.semiringClosureBound(this._handle); }
+  validateLaws(values, epsilon = 0) {
+    if (!Array.isArray(values)) throw new TypeError("semiring law samples must be an array");
+    ffi.semiringValidateLaws(this._handle, values.map((v) => this.#operand(v)), epsilon);
+  }
+  close() {
+    if (this.#handle !== null) {
+      ffi.semiringClose(this.#handle);
+      this.#handle = null;
+    }
+  }
+  [Symbol.dispose]() { this.close(); }
+}
+
 class WfstBuilder {
   #handle = ffi.wfstBuilderNew();
   get _handle() {
@@ -566,6 +704,18 @@ const llingLlang = Object.freeze({
   lattice(provider, options) {
     const [value, domainId] = hostLattice(provider, options);
     return new Lattice(ffi.hostLatticeNew(value, domainId), domainId);
+  },
+  semiring(provider, options) {
+    const normalized = hostSemiring(provider, options);
+    const closureKnown = normalized.closureBound !== null;
+    const closureBound = normalized.closureBound ?? 0n;
+    return new Semiring(
+      ffi.hostSemiringNew(
+        normalized.provider, normalized.domainId, normalized.propertyBits,
+        closureKnown, closureBound,
+      ),
+      normalized,
+    );
   },
   validateLatticeLaws(values) {
     if (!Array.isArray(values)) throw new TypeError("lattice law samples must be an array");

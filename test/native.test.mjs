@@ -113,6 +113,33 @@ class MaximumLatticeProvider {
   }
 }
 
+class NonnegativeRealSemiring {
+  constructor(telemetry = { plusMany: 0, timesMany: 0 }) { this.telemetry = telemetry; }
+  zero() { return 0; }
+  one() { return 1; }
+  plus(left, right) { return left + right; }
+  times(left, right) { return left * right; }
+  equal(left, right) { return Object.is(left, right); }
+  approximatelyEqual(left, right, epsilon) { return Math.abs(left - right) <= epsilon; }
+  naturalOrder(left, right) {
+    return left < right ? "better" : left > right ? "worse" : "equal";
+  }
+  diagnostic(value) { return value === undefined ? "nonnegative-real" : `real(${value})`; }
+  stableBytes(value) {
+    const bytes = new Uint8Array(8);
+    new DataView(bytes.buffer).setFloat64(0, value, false);
+    return bytes;
+  }
+  plusMany(values) { this.telemetry.plusMany += 1; return values.reduce((a, b) => a + b, 0); }
+  timesMany(values) { this.telemetry.timesMany += 1; return values.reduce((a, b) => a * b, 1); }
+  divide(dividend, divisor) { return divisor === 0 ? null : dividend / divisor; }
+  leftDivide(value, divisor) { return divisor === 0 ? null : value / divisor; }
+  star(value) { return value < 1 ? 1 / (1 - value) : null; }
+  numericalValue(value) { return value; }
+  quantize(value, epsilon) { return BigInt(Math.round(value / epsilon)); }
+  toProbability(value) { return value; }
+}
+
 test("native N-API uses one cross-project runtime and exact snapshots", () => {
   assert.equal(libdictenstein.runtimeIdentity, runtimeIdentity);
   assert.equal(liblevenshtein.runtimeIdentity, runtimeIdentity);
@@ -441,6 +468,10 @@ test("every index.d.ts member exists on the native path", async () => {
   const lattice = llingLlang.lattice(
     new MaximumLatticeProvider(1), { domainId: maximumLatticeDomain },
   );
+  const semiring = llingLlang.semiring(
+    new NonnegativeRealSemiring(), { domainId: "example.real.sum" },
+  );
+  const semiringWeight = semiring.one();
 
   // Interfaces describing plain data records need no live instance; every
   // interface that declares behavior must map to one so a new declaration
@@ -456,6 +487,8 @@ test("every index.d.ts member exists on the native path", async () => {
     ["Wfst", wfst],
     ["WfstBuilder", builder],
     ["Lattice", lattice],
+    ["Semiring", semiring],
+    ["SemiringWeight", semiringWeight],
     ["LibdictensteinNamespace", libdictenstein],
     ["LiblevenshteinNamespace", liblevenshtein],
     ["LlingLlangNamespace", llingLlang],
@@ -491,6 +524,8 @@ test("every index.d.ts member exists on the native path", async () => {
     wfst.close();
     builder.close();
     lattice.close();
+    semiringWeight.close();
+    semiring.close();
     transducer.close();
     pattern.close();
     rules.close();
@@ -855,6 +890,75 @@ test("native JavaScript lattice providers execute bounds, batches, laws, and own
   }
   assert.throws(() => low.diagnostic(), /closed/);
   assert.doesNotThrow(() => low.close());
+});
+
+test("native JavaScript semiring providers execute refined algebra and bounded batches", () => {
+  const provider = new NonnegativeRealSemiring();
+  const semiring = llingLlang.semiring(provider, {
+    domainId: "example.real.sum",
+    properties: ["hashable", "zero-sum-free", "commutative-times", "totally-ordered", "nonnegative"],
+    closureBound: null,
+  });
+  const zero = semiring.zero();
+  const one = semiring.one();
+  const two = semiring.plus(one, one);
+  const three = semiring.plusMany([one, two]);
+  const product = semiring.timesMany([two, three]);
+  const cloned = three.clone();
+  const quotient = semiring.divide(product, two);
+  try {
+    assert.equal(semiring.equal(three, cloned), true);
+    assert.equal(semiring.approximatelyEqual(three, quotient, 0), true);
+    assert.equal(semiring.naturalOrder(two, three), "better");
+    assert.equal(semiring.numericalValue(product), 6);
+    assert.equal(semiring.quantize(three, 0.5), 6n);
+    assert.equal(semiring.toProbability(three), 3);
+    assert.equal(semiring.closureBound(), null);
+    assert.equal(three.diagnostic(), "real(3)");
+    assert.equal(semiring.diagnostic(), "nonnegative-real");
+    assert.deepEqual([...three.stableBytes()], [64, 8, 0, 0, 0, 0, 0, 0]);
+    assert.equal(provider.telemetry.plusMany, 1);
+    assert.equal(provider.telemetry.timesMany, 1);
+    semiring.validateLaws([zero, one, two, three], 0);
+    assert.equal(semiring.divide(one, zero), null);
+    assert.equal(semiring.star(one), null);
+  } finally {
+    for (const value of [quotient, cloned, product, three, two, one, zero]) value?.close();
+    semiring.close();
+  }
+  assert.throws(() => semiring.zero(), /closed/);
+});
+
+test("native semiring context identity, hostile providers, and reentrancy are contained", () => {
+  assert.throws(
+    () => llingLlang.semiring({}, { domainId: "example.real.sum" }),
+    /missing zero/,
+  );
+  const provider = new NonnegativeRealSemiring();
+  const first = llingLlang.semiring(provider, { domainId: "example.real.sum" });
+  const second = llingLlang.semiring(new NonnegativeRealSemiring(), {
+    domainId: "example.real.sum",
+  });
+  const firstOne = first.one();
+  const secondOne = second.one();
+  assert.throws(() => first.plus(firstOne, secondOne), /different operation context/);
+  const plainPlus = provider.plus.bind(provider);
+  provider.plus = (left, right) => {
+    first.diagnostic();
+    return plainPlus(left, right);
+  };
+  assert.throws(() => first.plus(firstOne, firstOne), /provider|callback/i);
+  provider.plus = plainPlus;
+  const recovered = first.plus(firstOne, firstOne);
+  try {
+    assert.equal(first.numericalValue(recovered), 2);
+  } finally {
+    recovered.close();
+    secondOne.close();
+    firstOne.close();
+    second.close();
+    first.close();
+  }
 });
 
 test("native lattice results renegotiate optional capabilities and fall back safely", () => {

@@ -160,6 +160,45 @@ bytes eagerly, and retains every result independently. Browser WebAssembly and
 WASI use the same contract through runtime-native generational handle tables;
 native Node uses the lower-overhead N-API resource path.
 
+## Run custom JavaScript semirings
+
+Every backend can execute a host-defined semiring: `plus` combines alternative
+paths, while `times` extends one path with another segment. The adapter roots
+ordinary immutable JavaScript values behind provider-scoped, generation-checked
+tokens, so values do not need a native representation:
+
+```js
+const probability = {
+  zero: () => 0,
+  one: () => 1,
+  plus: (left, right) => left + right,
+  times: (left, right) => left * right,
+  equal: Object.is,
+  approximatelyEqual: (left, right, epsilon) => Math.abs(left - right) <= epsilon,
+  naturalOrder: (left, right) => left > right ? "better" : left < right ? "worse" : "equal",
+  diagnostic: (value) => value === undefined ? "probability" : `p=${value}`,
+  numericalValue: (value) => value,
+  quantize: (value, epsilon) => BigInt(Math.round(value / epsilon)),
+  toProbability: (value) => value,
+};
+
+using weights = llingLlang.semiring(probability, {
+  domainId: "demo.probability",
+  properties: ["commutative-times", "totally-ordered", "nonnegative"],
+});
+using zero = weights.zero();
+using one = weights.one();
+using two = weights.plus(one, one);
+console.log(two.diagnostic()); // p=2
+```
+
+Optional batch, division, closure, stable-byte, numerical, and law capabilities
+are negotiated independently. Operations reject weights from another operation
+context even when the two contexts declare the same domain. Native Node,
+browser WebAssembly, and WASI expose the same surface, contain provider
+exceptions, reject recursive entry without blocking, and release every rooted
+value deterministically through `close()` or `Symbol.dispose`.
+
 ## Backend contract
 
 | Import | Backend | Intended host |

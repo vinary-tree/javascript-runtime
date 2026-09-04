@@ -584,3 +584,120 @@ test("WASI lattice providers reject malformed, foreign-domain, and reentrant cal
     local.close();
   }
 });
+
+class WasiNonnegativeRealSemiring {
+  constructor(calls = { plusMany: 0, timesMany: 0 }) { this.calls = calls; }
+  zero() { return 0; }
+  one() { return 1; }
+  plus(left, right) { return left + right; }
+  times(left, right) { return left * right; }
+  equal(left, right) { return Object.is(left, right); }
+  approximatelyEqual(left, right, epsilon) { return Math.abs(left - right) <= epsilon; }
+  naturalOrder(left, right) {
+    return left < right ? "better" : left > right ? "worse" : "equal";
+  }
+  diagnostic(value) { return value === undefined ? "nonnegative-real" : `real(${value})`; }
+  stableBytes(value) {
+    const bytes = new Uint8Array(8);
+    new DataView(bytes.buffer).setFloat64(0, value, false);
+    return bytes;
+  }
+  plusMany(values) { this.calls.plusMany += 1; return values.reduce((a, b) => a + b, 0); }
+  timesMany(values) { this.calls.timesMany += 1; return values.reduce((a, b) => a * b, 1); }
+  divide(value, divisor) { return divisor === 0 ? null : value / divisor; }
+  leftDivide(value, divisor) { return divisor === 0 ? null : value / divisor; }
+  star(value) { return value < 1 ? 1 / (1 - value) : null; }
+  numericalValue(value) { return value; }
+  quantize(value, epsilon) { return BigInt(Math.round(value / epsilon)); }
+  toProbability(value) { return value; }
+}
+
+test("WASI JavaScript semirings execute refinements, batches, laws, and disposal", async () => {
+  const runtime = await createWasiRuntime({ preopens: {} });
+  const provider = new WasiNonnegativeRealSemiring();
+  const semiring = runtime.llingLlang.semiring(provider, {
+    domainId: "example.real.sum",
+    properties: [
+      "hashable", "zero-sum-free", "commutative-times", "totally-ordered", "nonnegative",
+    ],
+  });
+  const zero = semiring.zero();
+  const one = semiring.one();
+  const two = semiring.plus(one, one);
+  const three = semiring.plusMany([one, two]);
+  const six = semiring.timesMany([two, three]);
+  const copied = three.clone();
+  const quotient = semiring.divide(six, three);
+  try {
+    assert.deepEqual(semiring.properties, [
+      "commutative-times", "hashable", "nonnegative", "totally-ordered", "zero-sum-free",
+    ]);
+    assert.equal(semiring.equal(three, copied), true);
+    assert.equal(semiring.approximatelyEqual(three, copied, 0), true);
+    assert.equal(semiring.naturalOrder(two, three), "better");
+    assert.equal(six.diagnostic(), "real(6)");
+    assert.equal(semiring.diagnostic(), "nonnegative-real");
+    assert.deepEqual([...three.stableBytes()], [64, 8, 0, 0, 0, 0, 0, 0]);
+    assert.equal(quotient.diagnostic(), "real(2)");
+    assert.equal(semiring.divide(one, zero), null);
+    assert.equal(semiring.star(one), null);
+    assert.equal(semiring.numericalValue(three), 3);
+    assert.equal(semiring.quantize(three, 0.5), 6n);
+    assert.equal(semiring.toProbability(three), 3);
+    assert.equal(semiring.closureBound(), null);
+    assert.equal(provider.calls.plusMany, 1);
+    assert.equal(provider.calls.timesMany, 1);
+    semiring.validateLaws([zero, one, two, three], 0);
+  } finally {
+    for (const value of [quotient, copied, six, three, two, one, zero]) value.close();
+    semiring.close();
+  }
+  assert.throws(() => semiring.one(), /closed/);
+  assert.doesNotThrow(() => semiring.close());
+});
+
+test("WASI semiring context identity, optional bytes, and reentrancy are contained", async () => {
+  const runtime = await createWasiRuntime({ preopens: {} });
+  const provider = new WasiNonnegativeRealSemiring();
+  const first = runtime.llingLlang.semiring(provider, { domainId: "example.real.sum" });
+  const second = runtime.llingLlang.semiring(
+    new WasiNonnegativeRealSemiring(), { domainId: "example.real.sum" },
+  );
+  const firstOne = first.one();
+  const secondOne = second.one();
+  assert.throws(() => first.plus(firstOne, secondOne), /different operation context/);
+
+  const originalOne = provider.one.bind(provider);
+  provider.one = () => {
+    first.diagnostic();
+    return 1;
+  };
+  assert.throws(() => first.one(), /ProviderError/);
+  provider.one = originalOne;
+  const recovered = first.one();
+
+  const bare = {
+    zero: () => 0,
+    one: () => 1,
+    plus: (left, right) => left + right,
+    times: (left, right) => left * right,
+    equal: Object.is,
+    approximatelyEqual: (left, right, epsilon) => Math.abs(left - right) <= epsilon,
+    naturalOrder: (left, right) => left < right ? "better" : left > right ? "worse" : "equal",
+    diagnostic: (value) => value === undefined ? "bare" : String(value),
+  };
+  const unstable = runtime.llingLlang.semiring(bare, { domainId: "example.real.raw" });
+  const unstableOne = unstable.one();
+  try {
+    assert.equal(recovered.diagnostic(), "real(1)");
+    assert.throws(() => unstableOne.stableBytes(), /stable bytes/);
+  } finally {
+    unstableOne.close();
+    unstable.close();
+    recovered.close();
+    secondOne.close();
+    firstOne.close();
+    second.close();
+    first.close();
+  }
+});

@@ -1,11 +1,23 @@
 import {
   assertLatticeProvider,
+  assertSemiringProvider,
   assertScalarWfstProvider,
   normalizeLatticeProviderOptions,
+  normalizeSemiringProviderOptions,
   normalizeScalarWfstProviderOptions,
 } from "@vinary-tree/vinary-tree-interop";
 
 const DEFAULT_BATCH_SIZE = 256;
+const semiringOwners = new WeakMap();
+const semiringProperties = new Map([
+  ["hashable", 1n],
+  ["idempotent-plus", 2n],
+  ["k-closed", 4n],
+  ["zero-sum-free", 8n],
+  ["commutative-times", 16n],
+  ["totally-ordered", 32n],
+  ["nonnegative", 64n],
+]);
 
 function defineResourceMetadata(resource, runtimeIdentity, unitDomain) {
   Object.defineProperties(resource, {
@@ -48,6 +60,14 @@ function requireLattice(lattice, runtimeIdentity, domainId = undefined) {
     throw new TypeError("lattice belongs to a different semantic domain");
   }
   return lattice;
+}
+
+function requireSemiringWeight(value, runtimeIdentity, semiring) {
+  if (value?.interfaceId !== "vt.semiring.val1" || value.runtimeIdentity !== runtimeIdentity ||
+      semiringOwners.get(value) !== semiring) {
+    throw new TypeError("semiring weight belongs to a different operation context");
+  }
+  return value;
 }
 
 function installCursorProtocol(raw) {
@@ -359,12 +379,31 @@ function hostLattice(provider, options) {
   return [provider, domainId];
 }
 
+function hostSemiring(provider, options) {
+  assertSemiringProvider(provider);
+  const normalized = normalizeSemiringProviderOptions(options);
+  const propertyBits = normalized.properties.reduce((bits, property) => {
+    const bit = semiringProperties.get(property);
+    if (bit === undefined) throw new TypeError(`unknown semiring property ${property}`);
+    return bits | bit;
+  }, 0n);
+  return { provider, ...normalized, propertyBits };
+}
+
 function latticeHandles(values, runtimeIdentity, domainId, maximum) {
   if (!Array.isArray(values) || values.length > maximum) {
     throw new TypeError(`lattice values must be an array of at most ${maximum} entries`);
   }
   return Uint32Array.from(values, (value) =>
     requireLattice(value, runtimeIdentity, domainId).registryHandle());
+}
+
+function semiringHandles(values, runtimeIdentity, semiring, maximum) {
+  if (!Array.isArray(values) || values.length > maximum) {
+    throw new TypeError(`semiring values must be an array of at most ${maximum} entries`);
+  }
+  return Uint32Array.from(values, (value) =>
+    requireSemiringWeight(value, runtimeIdentity, semiring).registryHandle());
 }
 
 function installQueryCacheProtocol(raw) {
@@ -444,6 +483,181 @@ export function createRuntime(raw) {
     });
   }
 
+  if (raw.Semiring && !raw.Semiring.prototype.plusMany) {
+    const context = raw.Semiring.prototype;
+    const weight = raw.SemiringWeight.prototype;
+    const rawZero = context.zero;
+    const rawOne = context.one;
+    const rawPlus = context.plus;
+    const rawTimes = context.times;
+    const rawEqual = context.equal;
+    const rawApproximatelyEqual = context.approximatelyEqual;
+    const rawNaturalOrder = context.naturalOrder;
+    const rawStableBytes = context.stableBytes;
+    const rawDiagnostic = context.diagnostic;
+    const rawDiagnosticWeight = context.diagnosticWeight;
+    const rawPlusMany = context.plusManyHandles;
+    const rawTimesMany = context.timesManyHandles;
+    const rawDivide = context.divide;
+    const rawLeftDivide = context.leftDivide;
+    const rawStar = context.star;
+    const rawNumericalValue = context.numericalValue;
+    const rawQuantize = context.quantize;
+    const rawToProbability = context.toProbability;
+    const rawValidateLaws = context.validateLawHandles;
+    const rawClone = weight.clone;
+    const attach = (value, owner) => {
+      if (value !== null && value !== undefined) semiringOwners.set(value, owner);
+      return value ?? null;
+    };
+    Object.defineProperties(weight, {
+      interfaceId: { value: "vt.semiring.val1" },
+      runtimeIdentity: { value: runtimeIdentity },
+      clone: {
+        value() {
+          const owner = semiringOwners.get(this);
+          if (owner === undefined) throw new TypeError("semiring weight has no operation context");
+          return attach(rawClone.call(this), owner);
+        },
+      },
+      [Symbol.dispose]: { value() { this.close(); } },
+    });
+    Object.defineProperties(context, {
+      interfaceId: { value: "vt.semiring.ctx1" },
+      runtimeIdentity: { value: runtimeIdentity },
+      zero: { value() { return attach(rawZero.call(this), this); } },
+      one: { value() { return attach(rawOne.call(this), this); } },
+      plus: {
+        value(left, right) {
+          return attach(rawPlus.call(
+            this,
+            requireSemiringWeight(left, runtimeIdentity, this),
+            requireSemiringWeight(right, runtimeIdentity, this),
+          ), this);
+        },
+      },
+      times: {
+        value(left, right) {
+          return attach(rawTimes.call(
+            this,
+            requireSemiringWeight(left, runtimeIdentity, this),
+            requireSemiringWeight(right, runtimeIdentity, this),
+          ), this);
+        },
+      },
+      equal: {
+        value(left, right) {
+          return rawEqual.call(
+            this,
+            requireSemiringWeight(left, runtimeIdentity, this),
+            requireSemiringWeight(right, runtimeIdentity, this),
+          );
+        },
+      },
+      approximatelyEqual: {
+        value(left, right, epsilon) {
+          return rawApproximatelyEqual.call(
+            this,
+            requireSemiringWeight(left, runtimeIdentity, this),
+            requireSemiringWeight(right, runtimeIdentity, this),
+            epsilon,
+          );
+        },
+      },
+      naturalOrder: {
+        value(left, right) {
+          return rawNaturalOrder.call(
+            this,
+            requireSemiringWeight(left, runtimeIdentity, this),
+            requireSemiringWeight(right, runtimeIdentity, this),
+          );
+        },
+      },
+      stableBytes: {
+        value(value) {
+          return rawStableBytes.call(this, requireSemiringWeight(value, runtimeIdentity, this));
+        },
+      },
+      diagnostic: {
+        value(value = null) {
+          return value === null
+            ? rawDiagnostic.call(this)
+            : rawDiagnosticWeight.call(
+              this, requireSemiringWeight(value, runtimeIdentity, this),
+            );
+        },
+      },
+      plusMany: {
+        value(values) {
+          return attach(rawPlusMany.call(
+            this, semiringHandles(values, runtimeIdentity, this, DEFAULT_BATCH_SIZE),
+          ), this);
+        },
+      },
+      timesMany: {
+        value(values) {
+          return attach(rawTimesMany.call(
+            this, semiringHandles(values, runtimeIdentity, this, DEFAULT_BATCH_SIZE),
+          ), this);
+        },
+      },
+      divide: {
+        value(left, right) {
+          return attach(rawDivide.call(
+            this,
+            requireSemiringWeight(left, runtimeIdentity, this),
+            requireSemiringWeight(right, runtimeIdentity, this),
+          ), this);
+        },
+      },
+      leftDivide: {
+        value(left, right) {
+          return attach(rawLeftDivide.call(
+            this,
+            requireSemiringWeight(left, runtimeIdentity, this),
+            requireSemiringWeight(right, runtimeIdentity, this),
+          ), this);
+        },
+      },
+      star: {
+        value(value) {
+          return attach(rawStar.call(
+            this, requireSemiringWeight(value, runtimeIdentity, this),
+          ), this);
+        },
+      },
+      numericalValue: {
+        value(value) {
+          return rawNumericalValue.call(
+            this, requireSemiringWeight(value, runtimeIdentity, this),
+          );
+        },
+      },
+      quantize: {
+        value(value, epsilon) {
+          return rawQuantize.call(
+            this, requireSemiringWeight(value, runtimeIdentity, this), epsilon,
+          );
+        },
+      },
+      toProbability: {
+        value(value) {
+          return rawToProbability.call(
+            this, requireSemiringWeight(value, runtimeIdentity, this),
+          );
+        },
+      },
+      validateLaws: {
+        value(values, epsilon = 0) {
+          rawValidateLaws.call(
+            this, semiringHandles(values, runtimeIdentity, this, 16), epsilon,
+          );
+        },
+      },
+      [Symbol.dispose]: { value() { this.close(); } },
+    });
+  }
+
   const libdictenstein = Object.freeze({
     runtimeIdentity,
     dynamicDawg(unitDomain = "unicode") {
@@ -502,6 +716,20 @@ export function createRuntime(raw) {
     lattice(provider, options) {
       const [value, domainId] = hostLattice(provider, options);
       return raw.createHostLattice(value, domainId);
+    },
+    semiring(provider, options) {
+      const selected = hostSemiring(provider, options);
+      const value = raw.createHostSemiring(
+        selected.provider,
+        selected.domainId,
+        selected.propertyBits,
+        selected.closureBound,
+      );
+      Object.defineProperty(value, "properties", {
+        value: selected.properties,
+        enumerable: true,
+      });
+      return value;
     },
     validateLatticeLaws(values) {
       const domainId = values?.[0]?.domainId;

@@ -1,6 +1,7 @@
 //! Browser/static-WebAssembly exports.
 
 mod browser_lattice;
+mod browser_semiring;
 
 use js_sys::{Array, BigInt, BigUint64Array, Function, JsString, Object, Reflect, Uint8Array};
 use libdictenstein::bindings::{

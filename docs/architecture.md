@@ -42,18 +42,26 @@ serialized.
 
 All backends expose the same dictionary collection conventions, streaming
 query cursors, scalar weighted finite-state transducers (WFSTs), dynamic
-lattice values, edit-distance functions, and deterministic close operations.
+semiring contexts, dynamic lattice values, edit-distance functions, and
+deterministic close operations.
 Backend-specific code may change marshalling, never observable algebra, query,
 or snapshot semantics.
 
-Host-defined JavaScript WFSTs and lattice values use common semantic contracts
-with three ownership strategies. Node-API holds a strong N-API reference and
+Host-defined JavaScript WFSTs, semiring contexts, and lattice values use common
+semantic contracts with three ownership strategies. Node-API holds a strong N-API reference and
 schedules off-thread cleanup through a per-resource thread-safe function.
 Browser WebAssembly roots providers in WebAssembly-owned contexts and uses
 generational handles for facade batches. WASI passes index-plus-generation
 handles to imported functions and copies bounded pages or algebra payloads
 through linear memory. Raw vtable pointers stay within their native or
 WebAssembly address space.
+
+Dynamic semiring weights are provider-scoped generational tokens rather than
+foreign pointers. Each public weight retains its exact operation context;
+cross-context algebra fails before host dispatch, even when domain identifiers
+match. Batch callbacks are capped at 256 values and fall back to ordered
+pairwise folds when absent. Optional division, star, numerical projection,
+stable encoding, and law declarations remain separate negotiated capabilities.
 
 Before entering host code, the consumer captures one resource retain and drops
 the global WASI handle-table guard. Provider callbacks consequently run under

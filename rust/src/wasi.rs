@@ -1,6 +1,7 @@
 //! Compact linear-memory ABI used by the Node WASI facade.
 
 mod wasi_lattice;
+mod wasi_semiring;
 
 use libdictenstein::bindings::{
     dictionary_algebra, BindingAlgebraOperation, BindingEntries, BindingTerm, BindingUnitDomain,
@@ -362,6 +363,8 @@ enum Handle {
     WfstBuilder(VectorWfst<char, TropicalWeight>),
     Wfst(WasiWfst),
     Lattice(wasi_lattice::WasiLattice),
+    Semiring(wasi_semiring::WasiSemiring),
+    SemiringWeight(wasi_semiring::WasiSemiringWeight),
 }
 
 struct Registry {

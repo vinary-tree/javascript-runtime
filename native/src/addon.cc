@@ -32,6 +32,8 @@ struct RulesHandle { LlevPhoneticRuleSet* value; };
 struct WfstBuilderHandle { LlingWfstBuilder* value; };
 struct WfstHandle { VtResource value; };
 struct LatticeHandle { LlingLatticeValue* value; };
+struct SemiringHandle { LlingSemiring* value; uint64_t identity; };
+struct SemiringWeightHandle { LlingSemiringWeight* value; uint64_t identity; };
 
 struct JsWfstProviderContext {
   std::atomic<uint64_t> references{1};
@@ -269,7 +271,7 @@ napi_value llev_error(napi_env env, LlevStatus status) {
   napi_throw_error(env, nullptr, message.c_str());
   return nullptr;
 }
-napi_value lling_error(napi_env env, LlingStatus status) {
+napi_value lling_error(napi_env env, LlingLlangStatus status) {
   std::string message = lling_last_error_message();
   if (message.empty()) message = "lling-llang status " + std::to_string(status);
   napi_throw_error(env, nullptr, message.c_str());
@@ -1682,6 +1684,7 @@ napi_value host_wfst_new(napi_env env, napi_callback_info info) {
 }
 
 #include "lattice_provider.inc"
+#include "semiring_provider.inc"
 
 napi_value wfst_builder_new(napi_env env, napi_callback_info) {
   LlingWfstBuilder* builder = nullptr;
@@ -2034,6 +2037,29 @@ napi_value initialize(napi_env env, napi_value exports) {
     {"latticeJoinMany", nullptr, lattice_join_many_value, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"latticeMeetMany", nullptr, lattice_meet_many_value, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"latticeValidateLaws", nullptr, lattice_validate_laws_value, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"hostSemiringNew", nullptr, host_semiring_new, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"semiringClose", nullptr, semiring_close, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"semiringZero", nullptr, semiring_zero, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"semiringOne", nullptr, semiring_one, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"semiringWeightClone", nullptr, semiring_weight_clone, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"semiringWeightClose", nullptr, semiring_weight_close, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"semiringPlus", nullptr, semiring_plus, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"semiringTimes", nullptr, semiring_times, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"semiringEqual", nullptr, semiring_equal_value, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"semiringApproximatelyEqual", nullptr, semiring_approximately_equal, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"semiringNaturalOrder", nullptr, semiring_natural_order_value, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"semiringStableBytes", nullptr, semiring_stable_bytes_value, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"semiringDiagnostic", nullptr, semiring_diagnostic_value, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"semiringPlusMany", nullptr, semiring_plus_many, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"semiringTimesMany", nullptr, semiring_times_many, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"semiringDivide", nullptr, semiring_divide, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"semiringLeftDivide", nullptr, semiring_left_divide, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"semiringStar", nullptr, semiring_star, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"semiringNumericalValue", nullptr, semiring_numerical_value, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"semiringQuantize", nullptr, semiring_quantize, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"semiringToProbability", nullptr, semiring_to_probability, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"semiringClosureBound", nullptr, semiring_closure_bound, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"semiringValidateLaws", nullptr, semiring_validate_laws, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"duallityWfstNew", nullptr, duallity_wfst_new, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"wfstCompose", nullptr, wfst_compose, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"wfstClose", nullptr, wfst_close, nullptr, nullptr, nullptr, napi_default, nullptr},
