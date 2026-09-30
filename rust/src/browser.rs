@@ -3,6 +3,7 @@
 mod browser_lattice;
 mod browser_semiring;
 
+use crate::duallity_config::OwnedDuallityWfst;
 use js_sys::{Array, BigInt, BigUint64Array, Function, JsString, Object, Reflect, Uint8Array};
 use libdictenstein::bindings::{
     dictionary_algebra, BindingAlgebraOperation, BindingEntries, BindingEntry, BindingTerm,
@@ -1048,6 +1049,7 @@ impl Drop for BrowserOwnedWfstResource {
 enum WfstBackend {
     Engine(OwnedWfstResource),
     Browser(BrowserOwnedWfstResource),
+    Configured(OwnedDuallityWfst),
 }
 
 impl WfstBackend {
@@ -1055,6 +1057,7 @@ impl WfstBackend {
         match self {
             Self::Engine(resource) => resource.as_raw(),
             Self::Browser(resource) => resource.as_raw(),
+            Self::Configured(resource) => resource.as_raw(),
         }
     }
 }
@@ -1210,6 +1213,46 @@ impl JsWfst {
     /// Release this facade. Compositions retaining it remain valid.
     pub fn close(&mut self) {
         self.inner = None;
+    }
+
+    /// Return the effective configured options as a pointer-free wire record.
+    #[wasm_bindgen(js_name = duallityOptionsBytes)]
+    pub fn duallity_options_bytes(&self) -> Result<Uint8Array, JsValue> {
+        let WfstBackend::Configured(resource) = self.inner()? else {
+            return Err(error("WFST has no duallity configuration owner"));
+        };
+        Ok(Uint8Array::from(
+            resource.encoded_options().map_err(error)?.as_slice(),
+        ))
+    }
+
+    /// Return exact native cache counters as ten little-endian u64 values.
+    #[wasm_bindgen(js_name = duallityStatisticsBytes)]
+    pub fn duallity_statistics_bytes(&self) -> Result<Uint8Array, JsValue> {
+        let WfstBackend::Configured(resource) = self.inner()? else {
+            return Err(error("WFST has no duallity configuration owner"));
+        };
+        Ok(Uint8Array::from(
+            resource.encoded_statistics().map_err(error)?.as_slice(),
+        ))
+    }
+
+    /// Clear the sole provider-owned duallity cache.
+    #[wasm_bindgen(js_name = duallityCacheClear)]
+    pub fn duallity_cache_clear(&self) -> Result<(), JsValue> {
+        let WfstBackend::Configured(resource) = self.inner()? else {
+            return Err(error("WFST has no duallity configuration owner"));
+        };
+        resource.clear_cache().map_err(error)
+    }
+
+    /// Atomically replace the provider cache policy and empty its residency.
+    #[wasm_bindgen(js_name = duallityCacheSetPolicy)]
+    pub fn duallity_cache_set_policy(&self, policy: u32, capacity: u64) -> Result<(), JsValue> {
+        let WfstBackend::Configured(resource) = self.inner()? else {
+            return Err(error("WFST has no duallity configuration owner"));
+        };
+        resource.set_cache_policy(policy, capacity).map_err(error)
     }
 }
 
@@ -1417,6 +1460,21 @@ pub fn create_duallity_wfst(
     .map_err(error)?;
     Ok(JsWfst {
         inner: Some(WfstBackend::Engine(resource)),
+    })
+}
+
+/// Construct a configured duallity WFST without losing its control owner.
+#[wasm_bindgen(js_name = createDuallityWfstConfigured)]
+pub fn create_duallity_wfst_configured(
+    dictionary: &JsDictionary,
+    query: &str,
+    options: &Uint8Array,
+) -> Result<JsWfst, JsValue> {
+    let dictionary = dictionary.backend()?.resource();
+    let resource =
+        OwnedDuallityWfst::new(dictionary.as_raw(), query, &options.to_vec()).map_err(error)?;
+    Ok(JsWfst {
+        inner: Some(WfstBackend::Configured(resource)),
     })
 }
 

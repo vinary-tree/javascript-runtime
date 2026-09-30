@@ -6,6 +6,12 @@ import {
   normalizeSemiringProviderOptions,
   normalizeScalarWfstProviderOptions,
 } from "@vinary-tree/vinary-tree-interop";
+import {
+  decodeDuallityConfig,
+  decodeDuallityStatistics,
+  duallityPolicyValue,
+  encodeDuallityConfig,
+} from "./duallity-config.mjs";
 
 const DEFAULT_BATCH_SIZE = 256;
 const semiringOwners = new WeakMap();
@@ -456,6 +462,18 @@ export function createRuntime(raw) {
     runtimeIdentity: { value: runtimeIdentity },
     [Symbol.dispose]: { value() { this.close(); } },
   });
+  Object.defineProperties(raw.Wfst.prototype, {
+    options: { get() { return decodeDuallityConfig(this.duallityOptionsBytes()); } },
+    cacheStatistics: { get() { return decodeDuallityStatistics(this.duallityStatisticsBytes()); } },
+    clearCache: { value() { this.duallityCacheClear(); return this; } },
+    setCachePolicy: { value(policy, capacity = 0) {
+      if (!Number.isSafeInteger(capacity) || capacity < 0) {
+        throw new RangeError("cacheCapacity must be a nonnegative safe integer");
+      }
+      this.duallityCacheSetPolicy(duallityPolicyValue(policy), BigInt(capacity));
+      return this;
+    } },
+  });
 
   if (raw.Lattice && !raw.Lattice.prototype.joinMany) {
     const rawJoinMany = raw.Lattice.prototype.joinManyHandles;
@@ -757,6 +775,11 @@ export function createRuntime(raw) {
 
   const duallity = Object.freeze({
     runtimeIdentity,
+    configuredWfst(dictionary, query, options) {
+      return raw.createDuallityWfstConfigured(
+        requireDictionary(dictionary, runtimeIdentity), query, encodeDuallityConfig(options),
+      );
+    },
     wfst(
       dictionary,
       query,

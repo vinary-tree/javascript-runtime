@@ -3,11 +3,25 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import * as raw from "../generated/wasm/vinary_tree.js";
 import { createRuntime } from "../runtime-factory.mjs";
+import { verifyConfiguredDuallity } from "./duallity-config-conformance.mjs";
 
 raw.initSync({
   module: await readFile(new URL("../generated/wasm/vinary_tree_bg.wasm", import.meta.url)),
 });
 const { libdictenstein, liblevenshtein, llingLlang, duallity, runtimeIdentity } = createRuntime(raw);
+
+test("browser-WASM configured duallity WFST retains exact options and cache controls", () => {
+  verifyConfiguredDuallity({ libdictenstein, llingLlang, duallity });
+  const dictionary = libdictenstein.dynamicDawg();
+  try {
+    assert.throws(
+      () => raw.createDuallityWfstConfigured(dictionary, "cat", new Uint8Array([1, 2, 3])),
+      /configuration|truncated/i,
+    );
+  } finally {
+    dictionary.close();
+  }
+});
 
 function collect(cursor) {
   try {

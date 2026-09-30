@@ -3,6 +3,8 @@
 mod wasi_lattice;
 mod wasi_semiring;
 
+use crate::duallity_config::OwnedDuallityWfst;
+
 use libdictenstein::bindings::{
     dictionary_algebra, BindingAlgebraOperation, BindingEntries, BindingTerm, BindingUnitDomain,
     BindingValueMerge, DynamicDawgBinding, OwnedDictionaryResource, PersistentARTrieBinding,
@@ -119,6 +121,7 @@ struct WasiWfst {
 enum WasiWfstResource {
     Engine(OwnedWfstResource),
     Host(HostOwnedWfstResource),
+    Configured(OwnedDuallityWfst),
 }
 
 impl WasiWfstResource {
@@ -126,6 +129,7 @@ impl WasiWfstResource {
         match self {
             Self::Engine(resource) => resource.as_raw(),
             Self::Host(resource) => resource.as_raw(),
+            Self::Configured(resource) => resource.as_raw(),
         }
     }
 }
@@ -1317,6 +1321,124 @@ pub unsafe extern "C" fn vt_duallity_wfst_new(
             encoded: Vec::new(),
         })),
         Err(error) => registry.fail(error),
+    }
+}
+
+/// Construct a revision-3 configured duallity WFST and retain its control owner.
+#[no_mangle]
+pub unsafe extern "C" fn vt_duallity_wfst_new_configured(
+    dictionary_handle: u32,
+    query_pointer: u32,
+    query_length: u32,
+    options_pointer: u32,
+    options_length: u32,
+) -> u32 {
+    let result = (|| {
+        let query = str::from_utf8(unsafe { bytes(query_pointer, query_length) })
+            .map_err(|_| "query is not UTF-8")?;
+        let options = unsafe { bytes(options_pointer, options_length) };
+        let dictionary = {
+            let registry = locked_registry();
+            let Some(Handle::Dictionary(dictionary)) = registry.handles.get(&dictionary_handle)
+            else {
+                return Err("invalid dictionary handle".into());
+            };
+            dictionary.resource()
+        };
+        OwnedDuallityWfst::new(dictionary.as_raw(), query, options)
+    })();
+    let mut registry = locked_registry();
+    match result {
+        Ok(resource) => registry.insert(Handle::Wfst(WasiWfst {
+            resource: WasiWfstResource::Configured(resource),
+            encoded: Vec::new(),
+        })),
+        Err(error) => registry.fail(error),
+    }
+}
+
+/// Encode native-effective options into this handle's retained byte buffer.
+#[no_mangle]
+pub extern "C" fn vt_duallity_wfst_options(handle: u32) -> u32 {
+    let mut registry = locked_registry();
+    let result = match registry.handles.get_mut(&handle) {
+        Some(Handle::Wfst(WasiWfst {
+            resource: WasiWfstResource::Configured(owner),
+            encoded,
+        })) => owner.encoded_options().and_then(|value| {
+            let length = u32::try_from(value.len()).map_err(|_| "options readback is too large")?;
+            *encoded = value;
+            Ok(length)
+        }),
+        _ => Err("WFST has no live duallity configuration owner".into()),
+    };
+    match result {
+        Ok(length) => length,
+        Err(error) => registry.fail(error),
+    }
+}
+
+/// Encode native cache counters into this handle's retained byte buffer.
+#[no_mangle]
+pub extern "C" fn vt_duallity_wfst_statistics(handle: u32) -> u32 {
+    let mut registry = locked_registry();
+    let result = match registry.handles.get_mut(&handle) {
+        Some(Handle::Wfst(WasiWfst {
+            resource: WasiWfstResource::Configured(owner),
+            encoded,
+        })) => owner.encoded_statistics().and_then(|value| {
+            let length =
+                u32::try_from(value.len()).map_err(|_| "statistics readback is too large")?;
+            *encoded = value;
+            Ok(length)
+        }),
+        _ => Err("WFST has no live duallity configuration owner".into()),
+    };
+    match result {
+        Ok(length) => length,
+        Err(error) => registry.fail(error),
+    }
+}
+
+/// Clear the sole provider-owned cache without changing WFST semantics.
+#[no_mangle]
+pub extern "C" fn vt_duallity_wfst_cache_clear(handle: u32) -> u32 {
+    let result = {
+        let registry = locked_registry();
+        match registry.handles.get(&handle) {
+            Some(Handle::Wfst(WasiWfst {
+                resource: WasiWfstResource::Configured(owner),
+                ..
+            })) => owner.clear_cache(),
+            _ => Err("WFST has no live duallity configuration owner".into()),
+        }
+    };
+    match result {
+        Ok(()) => 0,
+        Err(error) => locked_registry().fail(error),
+    }
+}
+
+/// Publish a new provider cache policy and clear its old generation.
+#[no_mangle]
+pub extern "C" fn vt_duallity_wfst_cache_set_policy(
+    handle: u32,
+    policy: u32,
+    capacity: u64,
+) -> u32 {
+    let result = {
+        let registry = locked_registry();
+        match registry.handles.get(&handle) {
+            Some(Handle::Wfst(WasiWfst {
+                resource: WasiWfstResource::Configured(owner),
+                ..
+            })) => owner.set_cache_policy(policy, capacity),
+            _ => Err("WFST has no live duallity configuration owner".into()),
+        }
+    };
+    match result {
+        Ok(()) => 0,
+        Err(error) => locked_registry().fail(error),
     }
 }
 

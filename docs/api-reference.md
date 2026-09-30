@@ -605,6 +605,114 @@ variants, the four `"generalized-*"` variants, or `"fzf"`.
 one dictionary snapshot and creates a closeable lazy `Wfst`. It defaults to the
 standard algorithm and `"levenshtein"` kind.
 
+`duallity.configuredWfst(dictionary, query, options)` is the revision-3
+configuration entry point in native N-API, browser WebAssembly, and Node WASI.
+The `DuallityWfstOptions` object can select an edit family, a cache policy,
+generalized resource limits, and an owned custom operation grammar. The
+returned `ConfiguredDuallityWfst` still implements `Wfst`: it can be composed
+by `llingLlang.compose` and survives later dictionary mutation or closure.
+The positional constructor remains available with its original behavior;
+neither it nor an arbitrary composed WFST acquires duallity cache controls.
+
+| Configured duallity capability | Native N-API | Browser WebAssembly | Node WASI |
+| --- | --- | --- | --- |
+| Constructor with edit family, cache policy, limits, and custom operations | Yes | Yes | Yes |
+| Effective options and lossless cache-statistics readback | Yes | Yes | Yes |
+| Cache clear and policy update | Yes | Yes | Yes |
+| Control of a positional or composed WFST | No: no configuration owner | No: no configuration owner | No: no configuration owner |
+
+All three configured paths require duallity ABI revision 3 and reject an
+unavailable revision. Browser and WASI controls are backed by the same native
+duallity implementation compiled to their respective WebAssembly targets;
+they do not emulate cache controls in JavaScript.
+
+```js
+const dictionary = libdictenstein.dynamicDawg("unicode");
+dictionary.set("café", 1n).set("cafe", 2n);
+const configured = duallity.configuredWfst(dictionary, "café", {
+  kind: "generalized-standard",
+  maximumDistance: 1,
+  cachePolicy: "lru",
+  cacheCapacity: 512,
+  operations: [
+    { name: "equal", consumeX: 1, consumeY: 1, weight: 0,
+      applicability: "equal" },
+    { name: "accent", consumeX: 1, consumeY: 1, weight: 1,
+      applicability: "listed", restrictions: [{ source: "é", target: "e" }] },
+  ],
+});
+console.log(configured.options.cachePolicy, configured.cacheStatistics.misses);
+configured.clearCache().setCachePolicy("none");
+configured.close();
+dictionary.close();
+```
+
+`DuallityWfstKind` names the nine native constructors. `DuallityCachePolicy`
+is `"all"`, `"none"`, or `"lru"`; only LRU accepts nonzero capacity. A zero
+LRU capacity selects the native effective default (100,000 states, except FZF
+selects no cache). `DuallityGeneralizedLimits` requires all eight ceilings if
+supplied. Only generalized kinds accept those ceilings or custom operations.
+`DuallityOperation` sets a name, nonnegative finite cost, query/source scalar
+consumption, and `DuallityOperationApplicability`. Applicability can be
+`"any"`, `"equal"`, `"adjacent-transpose"`, or `"listed"`; listed operations
+require nonempty `{source,target}` restrictions whose Unicode-scalar lengths
+match their declared consumption. FZF uses maximum-distance zero and its
+Arctic weight domain; non-Levenshtein kinds require the standard algorithm
+sentinel. JavaScript validates the transport before the native ABI validates
+the grammar and captures the snapshot.
+
+`ConfiguredDuallityWfst.options` reads back the effective native configuration,
+including copied `limits` and `operations`. `ConfiguredDuallityWfst.cacheStatistics`
+reads ten lossless `bigint` counters: `hits`, `misses`, `faults`,
+`uncacheableResults`, `insertions`, `evictions`, `racedPublications`, `clears`,
+`residentStates`, and `recencyRecords` (`DuallityCacheStatistics`).
+`ConfiguredDuallityWfst.clearCache()` evicts residency without changing the
+automaton; `ConfiguredDuallityWfst.setCachePolicy(policy, capacity?)` atomically
+publishes the new policy and clears the prior generation. These methods use
+duallity's sole provider-owned cache, not a second JavaScript cache. Calling
+them on a non-configured WFST or after `close()` fails explicitly. A successful
+composition retains its source WFST independently, but the resulting composed
+WFST does not inherit a mutable duallity control handle.
+
+The transport accepts at most 4,096 custom operations, 4,096 total listed
+restriction pairs, 4,096 consumed scalars across the grammar, and one mebibyte
+of custom UTF-8 text. Values passed from JavaScript must be nonnegative safe
+integers; native address-space and automaton-specific bounds remain enforced
+by the C ABI. Unknown fields and selectors are rejected, not ignored.
+
+The exact option fields are `DuallityWfstOptions.kind` (constructor family),
+`DuallityWfstOptions.algorithm` (Levenshtein edit algorithm),
+`DuallityWfstOptions.maximumDistance` (nonnegative edit ceiling),
+`DuallityWfstOptions.cachePolicy` and
+`DuallityWfstOptions.cacheCapacity` (provider residency),
+`DuallityWfstOptions.limits` (optional generalized ceilings), and
+`DuallityWfstOptions.operations` (optional custom grammar). Each
+`DuallityOperation.name` labels one rule;
+`DuallityOperation.consumeX` and `DuallityOperation.consumeY` are consumed
+Unicode-scalar counts, `DuallityOperation.weight` is its nonnegative cost,
+`DuallityOperation.applicability` selects its match predicate, and
+`DuallityOperation.restrictions` is the optional allowed-pair list.
+
+The generalized ceilings are `DuallityGeneralizedLimits.maxQueryBytes` and
+`DuallityGeneralizedLimits.maxQueryScalars` for the query,
+`DuallityGeneralizedLimits.maxOperationSourceScalars` and
+`DuallityGeneralizedLimits.maxOperationQueryScalars` for one operation,
+`DuallityGeneralizedLimits.maxRetainedDictionaryNodes` and
+`DuallityGeneralizedLimits.maxRetainedWfstStates` for retained graph state,
+and `DuallityGeneralizedLimits.maxPathsPerExpansion` plus
+`DuallityGeneralizedLimits.maxWorkUnitsPerExpansion` for one expansion's
+search budget. Limit failures are errors, never silently truncated results.
+
+The cache counters are `DuallityCacheStatistics.hits` (cache lookups served),
+`DuallityCacheStatistics.misses` (unserved lookups),
+`DuallityCacheStatistics.faults` (failed provider expansions),
+`DuallityCacheStatistics.uncacheableResults` (results not admitted),
+`DuallityCacheStatistics.insertions` and `DuallityCacheStatistics.evictions`
+(residency changes), `DuallityCacheStatistics.racedPublications` (concurrent
+publication losses), `DuallityCacheStatistics.clears` (generation clears),
+`DuallityCacheStatistics.residentStates` (current payload count), and
+`DuallityCacheStatistics.recencyRecords` (current LRU metadata count).
+
 ## WASI API
 
 Import from `@vinary-tree/javascript-runtime/wasi`.

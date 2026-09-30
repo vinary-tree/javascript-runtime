@@ -258,8 +258,61 @@ export type DuallityWfstKind =
   | "universal-standard" | "universal-transposition" | "universal-merge-and-split"
   | "generalized-standard" | "generalized-transposition"
   | "generalized-merge-and-split" | "generalized-phonetic" | "fzf";
+export type DuallityCachePolicy = "all" | "none" | "lru";
+export type DuallityOperationApplicability =
+  "any" | "equal" | "adjacent-transpose" | "listed";
+export interface DuallityGeneralizedLimits {
+  maxQueryBytes: number;
+  maxQueryScalars: number;
+  maxOperationSourceScalars: number;
+  maxOperationQueryScalars: number;
+  maxRetainedDictionaryNodes: number;
+  maxRetainedWfstStates: number;
+  maxPathsPerExpansion: number;
+  maxWorkUnitsPerExpansion: number;
+}
+export interface DuallityOperation {
+  name: string;
+  consumeX: number;
+  consumeY: number;
+  weight: number;
+  applicability?: DuallityOperationApplicability;
+  restrictions?: readonly { source: string; target: string }[];
+}
+export interface DuallityWfstOptions {
+  kind?: DuallityWfstKind;
+  algorithm?: Algorithm;
+  maximumDistance?: number;
+  cachePolicy?: DuallityCachePolicy;
+  cacheCapacity?: number;
+  limits?: DuallityGeneralizedLimits;
+  operations?: readonly DuallityOperation[];
+}
+export interface DuallityCacheStatistics {
+  readonly hits: bigint;
+  readonly misses: bigint;
+  readonly faults: bigint;
+  readonly uncacheableResults: bigint;
+  readonly insertions: bigint;
+  readonly evictions: bigint;
+  readonly racedPublications: bigint;
+  readonly clears: bigint;
+  readonly residentStates: bigint;
+  readonly recencyRecords: bigint;
+}
+export interface ConfiguredDuallityWfst extends Wfst {
+  /** Native-effective options; throws after close. */
+  readonly options: Required<Pick<DuallityWfstOptions,
+    "kind" | "algorithm" | "maximumDistance" | "cachePolicy" | "cacheCapacity">> &
+    Pick<DuallityWfstOptions, "limits" | "operations">;
+  readonly cacheStatistics: DuallityCacheStatistics;
+  clearCache(): this;
+  setCachePolicy(policy: DuallityCachePolicy, capacity?: number): this;
+}
 export interface DuallityNamespace {
   readonly runtimeIdentity: RuntimeIdentity;
+  configuredWfst(dictionary: DictionaryResource, query: string,
+                 options: DuallityWfstOptions): ConfiguredDuallityWfst;
   wfst(dictionary: DictionaryResource, query: string, maximumDistance: number,
        algorithm?: Algorithm, kind?: DuallityWfstKind): Wfst;
 }

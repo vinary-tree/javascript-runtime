@@ -2,8 +2,25 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createRequire } from "node:module";
 import test from "node:test";
 import { libdictenstein, liblevenshtein, llingLlang, duallity, runtimeIdentity } from "../native.mjs";
+import { verifyConfiguredDuallity } from "./duallity-config-conformance.mjs";
+
+test("native configured duallity WFST retains exact options and cache controls", () => {
+  verifyConfiguredDuallity({ libdictenstein, llingLlang, duallity });
+  const require = createRequire(import.meta.url);
+  const addon = require("../native/build/Release/vinary_tree_native.node");
+  const dictionary = libdictenstein.dynamicDawg();
+  try {
+    assert.throws(
+      () => addon.duallityWfstNewConfigured(dictionary._handle, "cat", Uint8Array.of(1, 2, 3)),
+      /configuration|truncated/i,
+    );
+  } finally {
+    dictionary.close();
+  }
+});
 
 function collect(cursor) {
   try { return [...cursor].map(({ term, distance, id }) => [term.value, distance, id]); }
@@ -465,6 +482,9 @@ test("every index.d.ts member exists on the native path", async () => {
   const builder = llingLlang.vectorWfst();
   builder.setStart(builder.addState());
   const wfst = duallity.wfst(dictionary, "cat", 1);
+  const configuredWfst = duallity.configuredWfst(dictionary, "cat", {
+    maximumDistance: 1,
+  });
   const lattice = llingLlang.lattice(
     new MaximumLatticeProvider(1), { domainId: maximumLatticeDomain },
   );
@@ -485,6 +505,7 @@ test("every index.d.ts member exists on the native path", async () => {
     ["Transducer", transducer],
     ["QueryCache", cache],
     ["Wfst", wfst],
+    ["ConfiguredDuallityWfst", configuredWfst],
     ["WfstBuilder", builder],
     ["Lattice", lattice],
     ["Semiring", semiring],
@@ -522,6 +543,7 @@ test("every index.d.ts member exists on the native path", async () => {
     cursor.close();
     cache.close();
     wfst.close();
+    configuredWfst.close();
     builder.close();
     lattice.close();
     semiringWeight.close();

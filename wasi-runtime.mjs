@@ -8,6 +8,12 @@ import {
   normalizeSemiringProviderOptions,
   normalizeScalarWfstProviderOptions,
 } from "@vinary-tree/vinary-tree-interop";
+import {
+  decodeDuallityConfig,
+  decodeDuallityStatistics,
+  duallityPolicyValue,
+  encodeDuallityConfig,
+} from "./duallity-config.mjs";
 
 const FAILURE = 0xffff_ffff;
 const RECORD_SIZE = 32;
@@ -1287,6 +1293,28 @@ export async function createWasiRuntime({
         arcs,
       };
     }
+    get options() {
+      const handle = this._handle;
+      const length = failure(ffi.vt_duallity_wfst_options(handle));
+      const pointer = failure(ffi.vt_wfst_state_pointer(handle));
+      return decodeDuallityConfig(bytes().slice(pointer, pointer + length));
+    }
+    get cacheStatistics() {
+      const handle = this._handle;
+      const length = failure(ffi.vt_duallity_wfst_statistics(handle));
+      const pointer = failure(ffi.vt_wfst_state_pointer(handle));
+      return decodeDuallityStatistics(bytes().slice(pointer, pointer + length));
+    }
+    clearCache() { failure(ffi.vt_duallity_wfst_cache_clear(this._handle)); return this; }
+    setCachePolicy(policy, capacity = 0) {
+      if (!Number.isSafeInteger(capacity) || capacity < 0) {
+        throw new RangeError("cacheCapacity must be a nonnegative safe integer");
+      }
+      failure(ffi.vt_duallity_wfst_cache_set_policy(
+        this._handle, duallityPolicyValue(policy), BigInt(capacity),
+      ));
+      return this;
+    }
     close() {
       if (this.#handle !== 0) {
         ffi.vt_handle_close(this.#handle);
@@ -1655,6 +1683,19 @@ export async function createWasiRuntime({
 
   const duallity = Object.freeze({
     runtimeIdentity,
+    configuredWfst(dictionary, query, options) {
+      if (dictionary?.runtimeIdentity !== runtimeIdentity || dictionary.interfaceId !== "vt.dictionary.v1") {
+        throw new TypeError("dictionary belongs to a different Vinary Tree runtime");
+      }
+      if (typeof query !== "string") throw new TypeError("query must be a string");
+      const encoded = encodeDuallityConfig(options);
+      return withBytes(query, (queryPointer, queryLength) =>
+        withBytes(encoded, (optionsPointer, optionsLength) => new Wfst(
+          ffi.vt_duallity_wfst_new_configured(
+            dictionary._handle, queryPointer, queryLength, optionsPointer, optionsLength,
+          ),
+        )));
+    },
     wfst(dictionary, query, maximumDistance, algorithm = "standard", kind = "levenshtein") {
       if (dictionary?.runtimeIdentity !== runtimeIdentity || dictionary.interfaceId !== "vt.dictionary.v1") {
         throw new TypeError("dictionary belongs to a different Vinary Tree runtime");

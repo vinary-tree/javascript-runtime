@@ -7,6 +7,12 @@ const {
   normalizeSemiringProviderOptions,
   normalizeScalarWfstProviderOptions,
 } = require("@vinary-tree/vinary-tree-interop");
+const {
+  decodeDuallityConfig,
+  decodeDuallityStatistics,
+  duallityPolicyValue,
+  encodeDuallityConfig,
+} = require("./duallity-config.mjs");
 const { existsSync } = require("node:fs");
 const { join } = require("node:path");
 const platform = `${process.platform}-${process.arch}`;
@@ -450,6 +456,18 @@ class Wfst {
   }
   start() { return ffi.wfstStart(this._handle); }
   state(state) { return ffi.wfstState(this._handle, state); }
+  get options() { return decodeDuallityConfig(ffi.duallityWfstOptionsBytes(this._handle)); }
+  get cacheStatistics() {
+    return decodeDuallityStatistics(ffi.duallityWfstStatisticsBytes(this._handle));
+  }
+  clearCache() { ffi.duallityWfstCacheClear(this._handle); return this; }
+  setCachePolicy(policy, capacity = 0) {
+    if (!Number.isSafeInteger(capacity) || capacity < 0) {
+      throw new RangeError("cacheCapacity must be a nonnegative safe integer");
+    }
+    ffi.duallityWfstCacheSetPolicy(this._handle, duallityPolicyValue(policy), BigInt(capacity));
+    return this;
+  }
   close() {
     if (this.#handle !== null) {
       ffi.wfstClose(this.#handle);
@@ -744,6 +762,15 @@ const llingLlang = Object.freeze({
 
 const duallity = Object.freeze({
   runtimeIdentity,
+  configuredWfst(dictionary, query, options) {
+    if (dictionary?.runtimeIdentity !== runtimeIdentity || dictionary.interfaceId !== "vt.dictionary.v1") {
+      throw new TypeError("dictionary belongs to a different Vinary Tree runtime");
+    }
+    if (typeof query !== "string") throw new TypeError("query must be a string");
+    return new Wfst(ffi.duallityWfstNewConfigured(
+      dictionary._handle, query, encodeDuallityConfig(options),
+    ));
+  },
   wfst(dictionary, query, maximumDistance, algorithm = "standard", kind = "levenshtein") {
     if (dictionary?.runtimeIdentity !== runtimeIdentity || dictionary.interfaceId !== "vt.dictionary.v1") {
       throw new TypeError("dictionary belongs to a different Vinary Tree runtime");

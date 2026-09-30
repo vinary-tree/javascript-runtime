@@ -4,6 +4,22 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { createWasiRuntime } from "../wasi-runtime.mjs";
+import { verifyConfiguredDuallity } from "./duallity-config-conformance.mjs";
+
+test("WASI configured duallity WFST retains exact options and cache controls", async () => {
+  const runtime = await createWasiRuntime({ preopens: {} });
+  verifyConfiguredDuallity(runtime);
+  const independent = await createWasiRuntime({ preopens: {} });
+  const foreignDictionary = independent.libdictenstein.dynamicDawg();
+  try {
+    assert.throws(
+      () => runtime.duallity.configuredWfst(foreignDictionary, "cat", {}),
+      /different Vinary Tree runtime/,
+    );
+  } finally {
+    foreignDictionary.close();
+  }
+});
 
 function values(cursor) {
   try { return [...cursor].map(({ term, id }) => [term.value, id]); }

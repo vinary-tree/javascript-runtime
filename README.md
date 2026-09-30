@@ -59,6 +59,12 @@ approximation affects only which exact results remain resident, never result
 correctness. Create one cache per Worker; cache objects are deliberately
 exclusive and synchronization-free.
 
+Configured duallity WFSTs expose the native revision-3 cache policy, exact
+statistics, generalized limits, and custom operation grammar in all three
+runtime hosts. For an example and the lifecycle/limit rules, see the
+[duallity API reference](docs/api-reference.md#duallity). The positional
+`duallity.wfst` constructor remains source-compatible.
+
 `size`, `set`, `get`, `has`, `delete`, `entries`, `keys`, `values`,
 `forEach`, and `[Symbol.iterator]` mirror familiar collection behavior.
 Ordinary iteration materializes one host-owned immutable revision, so early

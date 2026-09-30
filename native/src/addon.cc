@@ -16,6 +16,7 @@
 #include "liblevenshtein.h"
 #include "lling_llang.h"
 #include "duallity.h"
+#include "duallity_config.h"
 
 namespace {
 
@@ -30,7 +31,7 @@ struct CursorHandle { LlevQueryCursor* value; };
 struct PatternHandle { LlevPhoneticPattern* value; };
 struct RulesHandle { LlevPhoneticRuleSet* value; };
 struct WfstBuilderHandle { LlingWfstBuilder* value; };
-struct WfstHandle { VtResource value; };
+struct WfstHandle { VtResource value; DuallityWfst* configured = nullptr; };
 struct LatticeHandle { LlingLatticeValue* value; };
 struct SemiringHandle { LlingSemiring* value; uint64_t identity; };
 struct SemiringWeightHandle { LlingSemiringWeight* value; uint64_t identity; };
@@ -209,7 +210,9 @@ void wfst_builder_finalize(napi_env, void* data, void*) {
 void wfst_finalize(napi_env, void* data, void*) {
   auto* handle = static_cast<WfstHandle*>(data);
   lling_resource_release(handle->value);
+  if (handle->configured) duallity_wfst_free(handle->configured);
   handle->value = VtResource{};
+  handle->configured = nullptr;
   delete handle;
 }
 
@@ -1602,9 +1605,9 @@ VtStatus js_wfst_state_arcs(void* raw_context, uint64_t state, size_t start,
   });
 }
 
-napi_value wfst_external(napi_env env, VtResource value) {
+napi_value wfst_external(napi_env env, VtResource value, DuallityWfst* configured = nullptr) {
   napi_value result;
-  auto* handle = new WfstHandle{value};
+  auto* handle = new WfstHandle{value, configured};
   const auto status = napi_create_external(env, handle, wfst_finalize, nullptr, &result);
   if (status != napi_ok) {
     wfst_finalize(env, handle, nullptr);
@@ -1792,6 +1795,116 @@ napi_value duallity_wfst_new(napi_env env, napi_callback_info info) {
   return status == DUALLITY_STATUS_OK ? wfst_external(env, resource) : duallity_error(env, status);
 }
 
+napi_value duallity_wfst_new_configured(napi_env env, napi_callback_info info) {
+  const auto args = arguments(env, info, 3);
+  auto* dictionary = args.size() == 3 ? external<DictionaryHandle>(env, args[0]) : nullptr;
+  std::string query;
+  void* input = nullptr;
+  size_t length = 0;
+  if (!dictionary || !dictionary->value || !string(env, args[1], &query) ||
+      !typed_array(env, args[2], napi_uint8_array, &input, &length)) {
+    napi_throw_type_error(env, nullptr, "configured WFST requires dictionary, query, Uint8Array options");
+    return nullptr;
+  }
+  if (duallity_abi_version() != DUALLITY_ABI_VERSION ||
+      duallity_api_revision() < DUALLITY_CONFIG_API_REVISION) {
+    napi_throw_error(env, nullptr, "duallity configured ABI revision 3 is unavailable");
+    return nullptr;
+  }
+  duallity_config::Parsed parsed;
+  std::string parse_error;
+  if (!duallity_config::parse(static_cast<const uint8_t*>(input), length, &parsed, &parse_error)) {
+    napi_throw_type_error(env, nullptr, parse_error.c_str());
+    return nullptr;
+  }
+  VtResource dictionary_resource{};
+  const auto dictionary_status = ldict_dictionary_resource(dictionary->value, &dictionary_resource);
+  if (dictionary_status != LDICT_STATUS_OK) return ldict_error(env, dictionary_status);
+  DuallityWfst* wfst = nullptr;
+  auto status = duallity_wfst_new_configured_ref(
+      &dictionary_resource, reinterpret_cast<const uint8_t*>(query.data()), query.size(),
+      &parsed.options, &wfst);
+  if (status != DUALLITY_STATUS_OK) return duallity_error(env, status);
+  VtResource resource{};
+  status = duallity_wfst_resource(wfst, &resource);
+  if (status != DUALLITY_STATUS_OK) {
+    duallity_wfst_free(wfst);
+    return duallity_error(env, status);
+  }
+  return wfst_external(env, resource, wfst);
+}
+
+WfstHandle* configured_wfst(napi_env env, napi_value value) {
+  auto* handle = external<WfstHandle>(env, value);
+  if (!handle) return nullptr;
+  if (!handle->configured || !handle->value.context) {
+    napi_throw_error(env, nullptr, "WFST has no live duallity configuration owner");
+    return nullptr;
+  }
+  return handle;
+}
+
+napi_value byte_buffer(napi_env env, const std::vector<uint8_t>& bytes) {
+  napi_value result;
+  NAPI_OR_RETURN(env, napi_create_buffer_copy(env, bytes.size(), bytes.data(), nullptr, &result));
+  return result;
+}
+
+napi_value duallity_wfst_options_bytes(napi_env env, napi_callback_info info) {
+  const auto args = arguments(env, info, 1);
+  auto* handle = args.size() == 1 ? configured_wfst(env, args[0]) : nullptr;
+  if (!handle) return nullptr;
+  DuallityWfstOptionsV1 options{};
+  options.header = duallity_config::header(sizeof(options));
+  const auto status = duallity_wfst_options_get(handle->configured, &options);
+  if (status != DUALLITY_STATUS_OK) return duallity_error(env, status);
+  std::vector<uint8_t> encoded;
+  if (!duallity_config::encode(options, &encoded)) {
+    napi_throw_error(env, nullptr, "duallity returned invalid options readback");
+    return nullptr;
+  }
+  return byte_buffer(env, encoded);
+}
+
+napi_value duallity_wfst_statistics_bytes(napi_env env, napi_callback_info info) {
+  const auto args = arguments(env, info, 1);
+  auto* handle = args.size() == 1 ? configured_wfst(env, args[0]) : nullptr;
+  if (!handle) return nullptr;
+  DuallityCacheStatisticsV1 statistics{};
+  statistics.header = duallity_config::header(sizeof(statistics));
+  const auto status = duallity_wfst_cache_statistics(handle->configured, &statistics);
+  if (status != DUALLITY_STATUS_OK) return duallity_error(env, status);
+  std::vector<uint8_t> encoded;
+  encoded.reserve(80);
+  for (uint64_t value : {statistics.hits, statistics.misses, statistics.faults,
+                         statistics.uncacheable_results, statistics.insertions,
+                         statistics.evictions, statistics.raced_publications,
+                         statistics.clears, statistics.resident_states,
+                         statistics.recency_records}) duallity_config::put_u64(&encoded, value);
+  return byte_buffer(env, encoded);
+}
+
+napi_value duallity_cache_clear_binding(napi_env env, napi_callback_info info) {
+  const auto args = arguments(env, info, 1);
+  auto* handle = args.size() == 1 ? configured_wfst(env, args[0]) : nullptr;
+  if (!handle) return nullptr;
+  const auto status = duallity_wfst_cache_clear(handle->configured);
+  return status == DUALLITY_STATUS_OK ? undefined(env) : duallity_error(env, status);
+}
+
+napi_value duallity_cache_set_policy_binding(napi_env env, napi_callback_info info) {
+  const auto args = arguments(env, info, 3);
+  auto* handle = args.size() == 3 ? configured_wfst(env, args[0]) : nullptr;
+  uint32_t policy = 0;
+  uint64_t capacity = 0;
+  if (!handle || !uint32(env, args[1], &policy) || !uint64(env, args[2], &capacity)) {
+    napi_throw_type_error(env, nullptr, "invalid duallity cache policy or capacity");
+    return nullptr;
+  }
+  const auto status = duallity_wfst_cache_set_policy(handle->configured, policy, capacity);
+  return status == DUALLITY_STATUS_OK ? undefined(env) : duallity_error(env, status);
+}
+
 napi_value wfst_compose(napi_env env, napi_callback_info info) {
   const auto args = arguments(env, info, 2);
   auto* first = args.size() == 2 ? external<WfstHandle>(env, args[0]) : nullptr;
@@ -1811,7 +1924,9 @@ napi_value wfst_close(napi_env env, napi_callback_info info) {
   auto* handle = args.size() == 1 ? external<WfstHandle>(env, args[0]) : nullptr;
   if (!handle) return nullptr;
   lling_resource_release(handle->value);
+  if (handle->configured) duallity_wfst_free(handle->configured);
   handle->value = VtResource{};
+  handle->configured = nullptr;
   return undefined(env);
 }
 
@@ -2061,6 +2176,11 @@ napi_value initialize(napi_env env, napi_value exports) {
     {"semiringClosureBound", nullptr, semiring_closure_bound, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"semiringValidateLaws", nullptr, semiring_validate_laws, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"duallityWfstNew", nullptr, duallity_wfst_new, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"duallityWfstNewConfigured", nullptr, duallity_wfst_new_configured, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"duallityWfstOptionsBytes", nullptr, duallity_wfst_options_bytes, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"duallityWfstStatisticsBytes", nullptr, duallity_wfst_statistics_bytes, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"duallityWfstCacheClear", nullptr, duallity_cache_clear_binding, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"duallityWfstCacheSetPolicy", nullptr, duallity_cache_set_policy_binding, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"wfstCompose", nullptr, wfst_compose, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"wfstClose", nullptr, wfst_close, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"wfstStart", nullptr, wfst_start, nullptr, nullptr, nullptr, napi_default, nullptr},

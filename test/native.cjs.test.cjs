@@ -3,7 +3,25 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { llingLlang } = require("../native.cjs");
+const { libdictenstein, llingLlang, duallity } = require("../native.cjs");
+
+test("CommonJS shares the configured duallity native bridge", () => {
+  const dictionary = libdictenstein.dynamicDawg();
+  dictionary.put("cat", 1n);
+  const wfst = duallity.configuredWfst(dictionary, "cat", {
+    maximumDistance: 1, cachePolicy: "lru", cacheCapacity: 7,
+  });
+  try {
+    assert.equal(wfst.options.cachePolicy, "lru");
+    assert.equal(wfst.options.cacheCapacity, 7);
+    assert.equal(typeof wfst.cacheStatistics.misses, "bigint");
+    wfst.setCachePolicy("none");
+    assert.equal(wfst.options.cachePolicy, "none");
+  } finally {
+    wfst.close();
+    dictionary.close();
+  }
+});
 
 test("CommonJS exposes JavaScript-provided scalar WFSTs", () => {
   const provider = {

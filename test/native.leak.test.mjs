@@ -304,3 +304,29 @@ test("duallity levenshtein WFST cycle reaches memory steady state", () => {
     dictionary.close();
   });
 });
+
+test("configured duallity WFST close releases both control and resource owners", () => {
+  assertSteady("configuredDuallityWfst", () => {
+    const dictionary = buildDictionary();
+    const wfst = duallity.configuredWfst(dictionary, "cat", {
+      maximumDistance: 2, cachePolicy: "lru", cacheCapacity: 8,
+    });
+    wfst.state(wfst.start());
+    wfst.clearCache();
+    wfst.close();
+    dictionary.close();
+  });
+});
+
+test("configured duallity WFST finalizer releases both owners", async () => {
+  await assertFinalizerSteady("configuredDuallityFinalizer", () => {
+    const dictionary = buildDictionary();
+    const wfst = duallity.configuredWfst(dictionary, "cat", {
+      maximumDistance: 2, cachePolicy: "lru", cacheCapacity: 8,
+    });
+    wfst.state(wfst.start());
+    dictionary.close();
+    // The external finalizer must release the independently retained resource
+    // and its configuration/control handle exactly once.
+  });
+});

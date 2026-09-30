@@ -32,6 +32,7 @@ for (const required of [
   "README.md",
   "docs/api-reference.md",
   "index.d.ts",
+  "duallity-config.mjs",
   "native.mjs",
   "native.cjs",
   "wasm.mjs",

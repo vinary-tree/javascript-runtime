@@ -15,7 +15,7 @@ crate-type = ["cdylib", "rlib"]
 liblevenshtein = { version = "=4.0.0-rc.6", features = ["bindings-phonetic"] }
 libdictenstein = { version = "=4.0.0-rc.6", features = ["bindings-core"] }
 lling-llang = { version = "=4.0.0-rc.6", default-features = false, features = ["bindings-core"] }
-duallity = { version = "=4.0.0-rc.6", features = ["bindings-core"] }
+duallity = { version = "=4.0.0-rc.6", features = ["ffi"] }
 vinary-tree-interop = "=4.0.0-rc.6"
 wasm-bindgen = "=0.2.100"
 js-sys = "=0.3.77"

@@ -1,0 +1,40 @@
+import { copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = dirname(dirname(fileURLToPath(import.meta.url)));
+const [runtimeTarball, interopTarball] = process.argv.slice(2);
+if (!runtimeTarball || !interopTarball) {
+  throw new Error("usage: node scripts/verify-installed-consumer.mjs RUNTIME.tgz INTEROP.tgz");
+}
+const build = join(root, ".build");
+await mkdir(build, { recursive: true });
+const scratch = await mkdtemp(join(build, "installed-consumer-check-"));
+const cache = join(build, "npm-cache");
+const environment = { ...process.env, npm_config_cache: cache };
+
+function run(command, args, cwd) {
+  const result = spawnSync(command, args, {
+    cwd, env: environment, stdio: "inherit", timeout: 120_000,
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(`${command} exited ${result.status ?? "without a status"}`);
+  }
+}
+
+try {
+  await writeFile(join(scratch, "package.json"), JSON.stringify({
+    name: "vinary-tree-installed-consumer-probe", version: "0.0.0",
+    private: true, type: "module",
+  }));
+  await copyFile(join(root, "test", "installed-consumer.probe.mjs"), join(scratch, "probe.mjs"));
+  run("npm", [
+    "install", "--offline", "--ignore-scripts", "--no-audit", "--no-fund",
+    resolve(runtimeTarball), resolve(interopTarball),
+  ], scratch);
+  run("node", ["probe.mjs"], scratch);
+} finally {
+  await rm(scratch, { recursive: true, force: true });
+}
