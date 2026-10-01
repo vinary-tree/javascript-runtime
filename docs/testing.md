@@ -35,6 +35,26 @@ printed by `npm run configure:local`. The generated `.cargo/config.toml`, SDK,
 Cargo outputs, WASM outputs, and prebuilds are ignored and must never be
 committed.
 
+## Hosted development source graph
+
+The hosted integration job checks out six sibling source repositories before
+building the runtime. Until the coordinated RC.6 provider-cache and universal
+automaton changes reach their upstream `master` branches, a development run
+whose baseline is `master` selects these two compatible source refs:
+
+| Source repository | Transitional development ref | Required by duallity `master` |
+| --- | --- | --- |
+| lling-llang | `codex/vco-feature-integration` | Provider cache controls and configured WFST ownership |
+| liblevenshtein-rust | `codex/universal-variant-semantics` | Padded characteristic vectors and accepting-distance semantics |
+
+The other development sources remain on `master`, except llattice, which uses
+`v0.1.0`. The workflow-dispatch `development_refs_json` map overrides either
+transitional ref explicitly; a coordinated `release/*` baseline ignores both
+defaults. The immutable release `sourceRefs` in `release/version.json` are not
+changed by this development bridge. Remove each transitional default after its
+source branch has been merged into `master` and the same locked duallity build
+passes against the resulting master-only graph.
+
 ## Property-test model
 
 The native property suite compares optimized functions against small direct

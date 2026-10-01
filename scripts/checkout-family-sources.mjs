@@ -7,6 +7,15 @@ import { fileURLToPath } from "node:url";
 import { readReleaseModel, sourceOwners, validateSourceRefs } from "./release-source-refs.mjs";
 
 const runtimeRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+// Temporary RC.6 integration baseline until these APIs land on both upstream
+// master branches. duallity master already calls the provider-cache controls
+// in lling-llang and the universal-variant helpers in liblevenshtein-rust.
+// Keep release/* checkouts and explicit workflow-dispatch overrides authoritative.
+const transitionalMasterRefs = Object.freeze({
+  "liblevenshtein-rust": "codex/universal-variant-semantics",
+  "lling-llang": "codex/vco-feature-integration",
+});
+
 export function validateCheckoutParent(value) {
   const parent = resolve(value);
   if (parent !== dirname(runtimeRoot)) {
@@ -77,7 +86,10 @@ export function parseDevelopmentOverrides(value) {
 
 function developmentSourceRefs(candidate, overrides) {
   const coordinated = selectDevelopmentRef(candidate);
-  const selected = parseDevelopmentOverrides(overrides);
+  const selected = {
+    ...(coordinated === "master" ? transitionalMasterRefs : {}),
+    ...parseDevelopmentOverrides(overrides),
+  };
   return Object.freeze(Object.fromEntries(sourceOwners.map((owner) => [
     owner,
     selected[owner] ?? (owner === "llattice" ? "v0.1.0" : coordinated),
@@ -114,6 +126,22 @@ function selfTest() {
   if (selectDevelopmentRef("feature/local") !== "master") throw new Error("feature refs must use master siblings");
   if (selectDevelopmentRef("release/4.0.0-rc.5") !== "release/4.0.0-rc.5") {
     throw new Error("coordinated release ref was not preserved");
+  }
+  const baseline = developmentSourceRefs("feature/local", "{}");
+  if (baseline["liblevenshtein-rust"] !== transitionalMasterRefs["liblevenshtein-rust"] ||
+      baseline["lling-llang"] !== transitionalMasterRefs["lling-llang"] ||
+      baseline.duallity !== "master" || baseline.llattice !== "v0.1.0") {
+    throw new Error("transitional master source graph changed");
+  }
+  const manual = developmentSourceRefs("feature/local", '{"lling-llang":"master"}');
+  if (manual["lling-llang"] !== "master" ||
+      manual["liblevenshtein-rust"] !== transitionalMasterRefs["liblevenshtein-rust"]) {
+    throw new Error("manual development override lost precedence");
+  }
+  const release = developmentSourceRefs("release/4.0.0-rc.6", "{}");
+  if (release["lling-llang"] !== "release/4.0.0-rc.6" ||
+      release["liblevenshtein-rust"] !== "release/4.0.0-rc.6") {
+    throw new Error("transitional master refs leaked into coordinated release refs");
   }
   const overrides = developmentSourceRefs("feature/local",
     '{"duallity":"codex/binding-integration","lling-llang":"codex/vco-feature-integration"}');
