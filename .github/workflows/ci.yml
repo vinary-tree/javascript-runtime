@@ -7,8 +7,13 @@ on:
   workflow_dispatch:
     inputs:
       development_ref:
-        description: Coordinated family branch to test before primary-branch integration
+        description: Shared release branch; other refs still use master by default
         required: false
+        type: string
+      development_refs_json:
+        description: JSON map of family repository names to feature refs for manual integration tests
+        required: false
+        default: '{}'
         type: string
 
 permissions:
@@ -39,10 +44,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           DEVELOPMENT_REF: ${{ inputs.development_ref || github.head_ref || github.ref_name }}
+          DEVELOPMENT_REFS_JSON: ${{ inputs.development_refs_json || '{}' }}
         run: >-
           node scripts/checkout-family-sources.mjs
           --development
           --development-ref "$DEVELOPMENT_REF"
+          --development-overrides "$DEVELOPMENT_REFS_JSON"
           --parent "$GITHUB_WORKSPACE/.."
       - uses: dtolnay/rust-toolchain@1.95
         with: { targets: "wasm32-unknown-unknown,wasm32-wasip1" }

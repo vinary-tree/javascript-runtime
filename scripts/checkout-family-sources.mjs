@@ -51,11 +51,36 @@ export function selectDevelopmentRef(candidate) {
   return candidate;
 }
 
-function developmentSourceRefs(candidate) {
+export function parseDevelopmentOverrides(value) {
+  if (value === undefined || value === "") return Object.freeze({});
+  if (typeof value !== "string" || value.length > 4096) {
+    throw new Error("development overrides must be a bounded JSON object");
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error("development overrides must be valid JSON");
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("development overrides must be a JSON object");
+  }
+  for (const [owner, ref] of Object.entries(parsed)) {
+    if (!sourceOwners.includes(owner) || typeof ref !== "string" || ref.length > 255 ||
+        !/^(?:master|main|(?:codex|feature|release)\/[A-Za-z0-9._/-]+|v[0-9][A-Za-z0-9._-]*)$/.test(ref)) {
+      throw new Error(`invalid development override for ${owner}`);
+    }
+    output("git", ["check-ref-format", "--branch", ref]);
+  }
+  return Object.freeze(parsed);
+}
+
+function developmentSourceRefs(candidate, overrides) {
   const coordinated = selectDevelopmentRef(candidate);
+  const selected = parseDevelopmentOverrides(overrides);
   return Object.freeze(Object.fromEntries(sourceOwners.map((owner) => [
     owner,
-    owner === "llattice" ? "v0.1.0" : coordinated,
+    selected[owner] ?? (owner === "llattice" ? "v0.1.0" : coordinated),
   ])));
 }
 
@@ -90,6 +115,24 @@ function selfTest() {
   if (selectDevelopmentRef("release/4.0.0-rc.5") !== "release/4.0.0-rc.5") {
     throw new Error("coordinated release ref was not preserved");
   }
+  const overrides = developmentSourceRefs("feature/local",
+    '{"duallity":"codex/binding-integration","lling-llang":"codex/vco-feature-integration"}');
+  if (overrides.duallity !== "codex/binding-integration" ||
+      overrides["lling-llang"] !== "codex/vco-feature-integration" ||
+      overrides.libdictenstein !== "master" || overrides.llattice !== "v0.1.0") {
+    throw new Error("development overrides changed defaults or selected the wrong owner");
+  }
+  for (const malformed of ["[]", "null", "{", '{"unknown":"master"}',
+    '{"duallity":"../escape"}', '{"duallity":"--upload-pack=evil"}',
+    '{"duallity":"refs/heads/master"}']) {
+    let rejected = false;
+    try {
+      parseDevelopmentOverrides(malformed);
+    } catch {
+      rejected = true;
+    }
+    if (!rejected) throw new Error(`malformed development override passed validation: ${malformed}`);
+  }
   for (const malformed of ["release/-option", "release/../escape", "release/bad ref", "release/x.lock"]) {
     let rejected = false;
     try {
@@ -120,7 +163,8 @@ if (argumentsByName.has("--self-test")) {
   const parent = validateCheckoutParent(argumentsByName.get("--parent") ?? dirname(runtimeRoot));
   const development = argumentsByName.has("--development");
   const refs = development
-    ? developmentSourceRefs(argumentsByName.get("--development-ref"))
+    ? developmentSourceRefs(argumentsByName.get("--development-ref"),
+      argumentsByName.get("--development-overrides"))
     : validateSourceRefs(readReleaseModel());
   checkout(parent, refs, !development);
 }
