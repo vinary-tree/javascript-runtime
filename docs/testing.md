@@ -13,7 +13,7 @@ merely reporting that the umbrella package failed.
 | Native properties | `npm run test:property` | Deterministic fast-check oracles for distance, matching, values, and WFSTs |
 | WASI | `npm run build:wasi && npm test` | Linear-memory ABI, generational host providers, and persistent ARTrie preopen behavior |
 | Package contents | `npm run verify:package` | Native loaders, browser WASM, WASI, and declarations present; source-only files absent |
-| Installed family consumer | `npm run verify:installed-family-consumer` after all builds | Offline npm tarballs of the runtime, interop, and duallity expose configured WFST options and cache controls through native ESM/CommonJS, TypeScript and ClojureScript entries, browser WASM, and WASI; the installed TypeScript declarations compile |
+| Installed family consumer | `npm run verify:installed-family-consumer` after all builds | Offline npm tarballs of the runtime, interop, and duallity expose configured WFST options and cache controls through native ESM/CommonJS, TypeScript and ClojureScript entries, browser WASM, and WASI; installed TypeScript declarations compile and a ClojureScript consumer compiles and executes |
 
 ## Local sequence
 
@@ -48,6 +48,11 @@ adapter solely to emulate a browser loading the emitted WASM asset; the tested
 JavaScript and binary are the same bytes packaged for browsers. This gate is
 distinct from the mock-based facade unit tests: it verifies the real resource
 ABI and both package boundaries.
+The ClojureScript probe compiles the package's actual `.cljs` namespace with
+the pinned ClojureScript compiler and executes a configured WFST through the
+installed CommonJS facade, checking the idiomatic map conversion and cache
+controls. Its JVM temporary files stay inside the deleted consumer scratch
+directory rather than on a memory-backed system temporary mount.
 
 ## Hosted development source graph
 

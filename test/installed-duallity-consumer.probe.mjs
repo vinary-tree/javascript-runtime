@@ -20,6 +20,13 @@ function verifyHost(name, runtime, facade) {
   const dictionary = runtime.libdictenstein.dynamicDawg();
   dictionary.put("cat", 1n);
   dictionary.put("cot", 2n);
+  assert.throws(() => facade.configuredWfst(dictionary, "cat", null),
+    /options object/i, `${name} missing options`);
+  assert.throws(() => facade.configuredWfst(dictionary, "cat", {
+    ...options, unrecognizedOption: true,
+  }), /unknown|unrecognized/i, `${name} unknown options`);
+  assert.throws(() => facade.wfst(dictionary, "cat", 1, { cachePolicy: "none" }),
+    /use configuredWfst/i, `${name} legacy constructor guard`);
   const configured = facade.configuredWfst(dictionary, "cat", options);
   const positional = facade.wfst(dictionary, "cat", 1, "standard", "levenshtein");
   dictionary.close();
