@@ -59,7 +59,8 @@
     "tag": "next"
   },
   "devDependencies": {
-    "node-gyp": "13.0.1"
+    "node-gyp": "13.0.1",
+    "typescript": "5.9.3"
   },
   "scripts": {
     "configure:local": "node scripts/configure-local.mjs",
@@ -79,6 +80,7 @@
     "verify:prebuilds": "node scripts/verify-native-prebuilds.mjs",
     "verify:package": "node scripts/verify-package.mjs",
     "verify:installed-consumer": "node scripts/verify-installed-consumer.mjs",
+    "verify:installed-family-consumer": "node scripts/verify-installed-family-consumer.mjs",
     "verify": "./scripts/verify.sh",
     "prepack": "npm run verify:license && npm run verify:version && npm run build:wasm && npm run build:wasi && npm test"
   }

@@ -13,6 +13,7 @@ merely reporting that the umbrella package failed.
 | Native properties | `npm run test:property` | Deterministic fast-check oracles for distance, matching, values, and WFSTs |
 | WASI | `npm run build:wasi && npm test` | Linear-memory ABI, generational host providers, and persistent ARTrie preopen behavior |
 | Package contents | `npm run verify:package` | Native loaders, browser WASM, WASI, and declarations present; source-only files absent |
+| Installed family consumer | `npm run verify:installed-family-consumer` after all builds | Offline npm tarballs of the runtime, interop, and duallity expose configured WFST options and cache controls through native ESM/CommonJS, TypeScript and ClojureScript entries, browser WASM, and WASI; the installed TypeScript declarations compile |
 
 ## Local sequence
 
@@ -27,6 +28,10 @@ npm run stage:native
 npm run test:native
 npm run test:leak
 npm run test:property
+npm run build:wasm
+npm run build:wasi
+npm test
+npm run verify:installed-family-consumer
 ```
 
 The bootstrap defaults to sibling checkouts under the parent directory.
@@ -34,6 +39,15 @@ Override any source with `VINARY_TREE_<COMPONENT>_ROOT`; the accepted names are
 printed by `npm run configure:local`. The generated `.cargo/config.toml`, SDK,
 Cargo outputs, WASM outputs, and prebuilds are ignored and must never be
 committed.
+
+The installed-family gate packs all three local RC.6 npm packages without
+publishing them, installs only those tarballs into an isolated offline consumer,
+checks the actual package exports, and deletes the scratch installation and npm
+cache afterward. In Node, its browser-WASM probe supplies a file-URL fetch
+adapter solely to emulate a browser loading the emitted WASM asset; the tested
+JavaScript and binary are the same bytes packaged for browsers. This gate is
+distinct from the mock-based facade unit tests: it verifies the real resource
+ABI and both package boundaries.
 
 ## Hosted development source graph
 

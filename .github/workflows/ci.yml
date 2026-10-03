@@ -73,9 +73,11 @@ jobs:
           npm run configure:local
           npm run bootstrap:native
           npm run build:native:release
+          npm run stage:native
           npm run test:native
           npm run test:leak
           npm run test:property
           npm run build:wasm
           npm run build:wasi
           npm test
+          npm run verify:installed-family-consumer
